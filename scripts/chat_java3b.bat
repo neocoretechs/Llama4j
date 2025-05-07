@@ -1,0 +1,1 @@
+C:\Progra~1\Java\graalvm-jdk-25+20.1\bin\java -server -XX:+UseParallelGC -Xmn26g  -Xms26g -Xmx26g --enable-preview --add-modules jdk.incubator.vector -jar llama3.jar --model Llama-3.2-3B-Instruct-Q8_0.gguf --chat -n 75000 --seed 42
