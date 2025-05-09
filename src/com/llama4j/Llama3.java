@@ -55,6 +55,7 @@ import com.neocoretechs.rocksack.TransactionId;
 public class Llama3 {
     // Batch-size used in prompt evaluation.
     private static final int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
+    private final static boolean DEBUG = false;
     private static AsynchRelatrixClientTransaction dbClient = null;
     private static TransactionId xid = null;
 
@@ -97,6 +98,8 @@ public class Llama3 {
         	try {
         		dbClient = new AsynchRelatrixClientTransaction(options.localNode(), options.remoteNode(), options.remotePort());
         		xid = dbClient.getTransactionId();
+        		if(DEBUG)
+        			System.out.println("Relatrix transaction Id:"+xid);
         	} catch(IOException ioe) {
         		ioe.printStackTrace();
         	}
@@ -143,7 +146,14 @@ public class Llama3 {
                 String responseText = model.tokenizer().decode(responseTokens);
                 System.out.println(responseText);
                 if(dbClient != null)
-                	dbClient.store(xid, System.currentTimeMillis(), userText, responseText);
+                	dbClient.store(xid, System.currentTimeMillis(), userText, responseText);//.thenAccept(result-> {
+                		//System.out.println("Response from storage:"+result);
+                	//});
+            } else {
+                if(dbClient != null)
+                	dbClient.store(xid, System.currentTimeMillis(), userText, model.tokenizer().decode(responseTokens));//.thenAccept(result-> {
+                		//System.out.println("Response from storage:"+result);
+                	//});
             }
             if (stopToken == null) {
                 System.err.println("Ran out of context length...");
