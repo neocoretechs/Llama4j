@@ -49,10 +49,14 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
+import com.neocoretechs.relatrix.client.asynch.AsynchRelatrixClientTransaction;
+import com.neocoretechs.rocksack.TransactionId;
 
 public class Llama3 {
     // Batch-size used in prompt evaluation.
     private static final int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
+    private static AsynchRelatrixClientTransaction dbClient = null;
+    private static TransactionId xid = null;
 
     static Sampler selectSampler(int vocabularySize, float temperature, float topp, long rngSeed) {
         Sampler sampler;
@@ -88,6 +92,14 @@ public class Llama3 {
         conversationTokens.add(chatFormat.beginOfText);
         if (options.systemPrompt() != null) {
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt())));
+        }
+        if(options.localNode() != null) {
+        	try {
+        		dbClient = new AsynchRelatrixClientTransaction(options.localNode(), options.remoteNode(), options.remotePort());
+        		xid = dbClient.getTransactionId();
+        	} catch(IOException ioe) {
+        		ioe.printStackTrace();
+        	}
         }
         int startPosition = 0;
         Scanner in = new Scanner(System.in);
@@ -130,11 +142,17 @@ public class Llama3 {
             if (!options.stream()) {
                 String responseText = model.tokenizer().decode(responseTokens);
                 System.out.println(responseText);
+                if(dbClient != null)
+                	dbClient.store(xid, System.currentTimeMillis(), userText, responseText);
             }
             if (stopToken == null) {
                 System.err.println("Ran out of context length...");
                 break;
             }
+        }
+        if(dbClient != null) {
+        	dbClient.commit(xid);
+        	dbClient.endTransaction(xid);
         }
     }
 
@@ -168,7 +186,8 @@ public class Llama3 {
     }
 
     record Options(Path modelPath, String prompt, String systemPrompt, boolean interactive,
-                   float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo) {
+                   float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo,
+                   String localNode, String remoteNode, int remotePort) {
 
         static final int DEFAULT_MAX_TOKENS = 512;
 
@@ -203,6 +222,9 @@ public class Llama3 {
             out.println("  --max-tokens, -n <int>        number of steps to run for < 0 = limited by context length, default " + DEFAULT_MAX_TOKENS);
             out.println("  --stream <boolean>            print tokens during generation; may cause encoding artifacts for non ASCII text, default true");
             out.println("  --echo <boolean>              print ALL tokens to stderr, if true, recommended to set --stream=false, default false");
+            out.println("  --localNode <string>          local database client node");
+            out.println("  --remoteNode <string>         remote database client node");
+            out.println("  --remotePort <int>            remote database port");
             out.println();
             out.println("Examples:");
             out.println("  jbang Llama3.java --model llama3.2-1b-q4_0.gguf --prompt \"Tell me a joke\"");
@@ -224,6 +246,9 @@ public class Llama3 {
             boolean interactive = false;
             boolean stream = true;
             boolean echo = false;
+            String localNode = null;
+            String remoteNode = null;
+            int remotePort = 0;
 
             for (int i = 0; i < args.length; i++) {
                 String optionName = args[i];
@@ -256,12 +281,15 @@ public class Llama3 {
                             case "--max-tokens", "-n" -> maxTokens = Integer.parseInt(nextArg);
                             case "--stream" -> stream = Boolean.parseBoolean(nextArg);
                             case "--echo" -> echo = Boolean.parseBoolean(nextArg);
+                            case "--localNode" -> localNode = nextArg;
+                            case "--remoteNode" -> remoteNode = nextArg;
+                            case "--remotePort" -> remotePort = Integer.parseInt(nextArg);
                             default -> require(false, "Unknown option: %s", optionName);
                         }
                     }
                 }
             }
-            return new Options(modelPath, prompt, systemPrompt, interactive, temperature, topp, seed, maxTokens, stream, echo);
+            return new Options(modelPath, prompt, systemPrompt, interactive, temperature, topp, seed, maxTokens, stream, echo, localNode, remoteNode, remotePort);
         }
     }
 

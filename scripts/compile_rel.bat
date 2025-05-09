@@ -1,0 +1,1 @@
+C:\Progra~1\Java\graalvm-jdk-25+20.1\bin\javac -g --enable-preview -source 25 --add-modules jdk.incubator.vector -cp \Progra~1\apache\apache-tomcat\lib\Relatrix.jar;\Progra~1\apache\apache-tomcat\lib\RockSack.jar;\Progra~1\apache\apache-tomcat\lib\rocksdbjni-9.10.0-win64.jar -d target/classes src/com/llama4j/Llama3.java
