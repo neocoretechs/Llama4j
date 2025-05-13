@@ -38,7 +38,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
@@ -58,6 +63,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
 import com.neocoretechs.relatrix.client.asynch.AsynchRelatrixClientTransaction;
+import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
 
 public class Llama3 {
@@ -115,6 +121,7 @@ public class Llama3 {
         int startPosition = 0;
         Scanner in = new Scanner(System.in);
         loop: while (true) {
+        	boolean storeDb = true;
             System.out.print("> ");
             System.out.flush();
             String userText = in.nextLine();
@@ -136,6 +143,27 @@ public class Llama3 {
             	if(result == null)
             		continue;
             	userText = result.text();
+            	System.out.println(userText);
+            } else {
+            	if(userText.startsWith("/recalltime")) {
+            		storeDb = false;
+            		String[] query = userText.split(" ");
+            		String s = parseTime(query);
+            		if(s == null)
+            			continue;
+            		userText = s;
+                  	System.out.println(userText);
+            	} else {
+                  	if(userText.startsWith("/recallwords")) {
+                  		storeDb = false;
+                		String[] query = userText.split(" ");
+                		String s = parseKeywords(query);
+                		if(s == null)
+                			continue;
+                		userText = s;
+                      	System.out.println(userText);
+                  	}
+            	}
             }
             if (state == null) {
                 state = model.createNewState(BATCH_SIZE);
@@ -161,12 +189,12 @@ public class Llama3 {
             if (!options.stream()) {
                 String responseText = model.tokenizer().decode(responseTokens);
                 System.out.println(responseText);
-                if(dbClient != null)
+                if(dbClient != null && storeDb)
                 	dbClient.store(xid, System.currentTimeMillis(), userText, responseText);//.thenAccept(result-> {
                 		//System.out.println("Response from storage:"+result);
                 	//});
             } else {
-                if(dbClient != null)
+                if(dbClient != null && storeDb)
                 	dbClient.store(xid, System.currentTimeMillis(), userText, model.tokenizer().decode(responseTokens));//.thenAccept(result-> {
                 		//System.out.println("Response from storage:"+result);
                 	//});
@@ -248,6 +276,70 @@ public class Llama3 {
     	//	e.printStackTrace();
     	//}
     	//return null;
+    }
+    
+    /**
+     * element 0 is command <br> /recalltime 
+     * arg day time to end day time
+     * @param query the command line with command times
+     * @return String of Result instances from db that contain 2 elements of question/answer string in time range
+     */
+    private static String parseTime(String[] query) {
+    	CompletableFuture<Stream> s;
+		String tq,tqe;
+		LocalDateTime localDateTime;
+		long millis,millise;
+    	if(query == null)
+    		return null;
+    	if(query.length == 5) {
+    		// day time to end day time
+    		tq = String.format("%s %s", query[1], query[2]);
+    		tqe = String.format("%s %s", query[3], query[4]);
+    		localDateTime = LocalDateTime.parse(tq, DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss") );
+    		millis = localDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+    		localDateTime = LocalDateTime.parse(tqe, DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss") );
+    		millise = localDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+    		s = dbClient.findSubStream(xid,'*','?','?',millis,millise,String.class,String.class);
+    		StringBuilder sb = new StringBuilder();
+    		try {
+    			s.get().forEach(e->{
+    				sb.append(((Result)e).get(0));
+    				sb.append(((Result)e).get(1));
+    			});
+    		} catch(InterruptedException | ExecutionException ie) {}
+    		return sb.toString();
+    	}
+    	return null;
+    }
+    /**
+     * Element 0 is command /recallwords
+     * @param query the command line with command keywords
+     * @return the string of question/answer containing keywords
+     */
+    private static String parseKeywords(String[] query) {
+      	if(query == null || query.length < 2)
+    		return null;
+     	StringBuilder sb = new StringBuilder();
+      	CompletableFuture<Stream> s = dbClient.findStream(xid, '*', '?', '?');
+      	try {
+      		s.get().forEach(e->{
+      			String s1 = (String)((Result)e).get(0);
+      			for(int i = 1; i < query.length; i++) {
+      				if(s1.contains(query[i])) {
+      					sb.append(s1);
+      					break;
+      				}
+      			}
+      			s1 = (String)((Result)e).get(1);
+      			for(int i = 1; i < query.length; i++) {
+      				if(s1.contains(query[i])) {
+      					sb.append(s1);
+      					break;
+      				}
+      			}
+      		});
+      	} catch(InterruptedException | ExecutionException ie) {}
+      	return sb.toString();
     }
     
     record Options(Path modelPath, String prompt, String systemPrompt, boolean interactive,
