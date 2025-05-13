@@ -27,6 +27,8 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.lang.reflect.Field;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -49,6 +51,12 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
+
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+
 import com.neocoretechs.relatrix.client.asynch.AsynchRelatrixClientTransaction;
 import com.neocoretechs.rocksack.TransactionId;
 
@@ -120,6 +128,14 @@ public class Llama3 {
                             options.maxTokens() - conversationTokens.size());
                     continue;
                 }
+            }
+            if(userText.startsWith("www.") || userText.startsWith("http://") || userText.startsWith("https://")) {
+            	String[] urlc = userText.split(" ");
+            	Element result = parseLinks(urlc);
+            	// replace userText
+            	if(result == null)
+            		continue;
+            	userText = result.text();
             }
             if (state == null) {
                 state = model.createNewState(BATCH_SIZE);
@@ -194,7 +210,46 @@ public class Llama3 {
             System.out.println(responseText);
         }
     }
-
+    /**
+     * Parse the command line for url and xpath directive
+     * @param urlc array of cmdl args, link at 0
+     * @return The Element that matches directive
+     */
+    private static Element parseLinks(String[] urlc) {
+    	//try {	
+    		Document doc = null;
+    		if(urlc == null || urlc.length < 2)
+    			return null;
+    		try {
+    	 		doc = Jsoup.connect(urlc[0])
+        			.userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+        			.get();
+    		} catch(IOException ioe) {
+    			ioe.printStackTrace();
+    			return null;
+    		}
+    		Element result = null;
+    		Elements results = null;
+    		//for(int i = 1; i < urlc.length; i++) {
+    		//	results = doc.select(urlc[i]);
+    		//}
+    		results = doc.selectXpath(urlc[1]);
+    		if(results == null)
+    			return null;
+    		result = results.first();
+    		if(result == null)
+    			return null;
+    		if(result.is("a"))
+    			return parseLinks(new String[] {result.attr("href"),"//a"});
+    		return result;
+    		//System.out.printf("toString:%s text:%s wholeText:%s%n", result.toString(),result.text(),result.wholeText());
+    		//System.out.printf("result is a:%b result is a[href]:%b%n",result.is("a"),result.is("a[href]"));
+    	//} catch(MalformedURLException e) {
+    	//	e.printStackTrace();
+    	//}
+    	//return null;
+    }
+    
     record Options(Path modelPath, String prompt, String systemPrompt, boolean interactive,
                    float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo,
                    String localNode, String remoteNode, int remotePort) {
