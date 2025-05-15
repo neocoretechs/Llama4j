@@ -205,8 +205,11 @@ public class Llama3 {
             }
         }
         if(dbClient != null) {
-        	dbClient.commit(xid);
-        	dbClient.endTransaction(xid);
+        	try {
+        		dbClient.commit(xid).get();
+        		dbClient.endTransaction(xid).get();
+        		dbClient.close();
+        	} catch(InterruptedException | ExecutionException ie) {}
         }
     }
 
