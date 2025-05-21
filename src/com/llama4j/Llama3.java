@@ -1382,13 +1382,16 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
     }
 }
 
+interface TokenizerInterface {
+	
+}
 /**
  * Byte Pair Encoding tokenizer.
  * <p>
  * Based on <a href="https://github.com/karpathy/minbpe">minbpe</a>, algorithmically follows along the
  * <a href="https://github.com/openai/gpt-2/blob/master/src/encoder.py">GPT 2 tokenizer</a>
  */
-class Tokenizer {
+class Tokenizer implements TokenizerInterface {
     private final Pattern compiledPattern;
     private final Vocabulary vocabulary;
     private final Map<Pair<Integer, Integer>, Integer> merges;
@@ -1632,6 +1635,153 @@ class Tokenizer {
         return new String(rawBytes, StandardCharsets.UTF_8);
     }
 }
+
+/**
+ * Byte Pair Encoding tokenizer.
+ * <p>
+ * Based on <a href="https://github.com/karpathy/minbpe">minbpe</a>, algorithmically follows along the
+ * <a href="https://github.com/openai/gpt-2/blob/master/src/encoder.py">GPT 2 tokenizer</a>
+ */
+class MistralTokenizer implements TokenizerInterface {
+    private final Pattern compiledPattern;
+    private final Vocabulary vocabulary;
+    private final Map<String, Integer> specialTokens;
+    private final int[] tokenType;
+    private final int byte0;
+
+    public String regexPattern() {
+        if (compiledPattern == null) {
+            return null;
+        }
+        return compiledPattern.pattern();
+    }
+
+    public Map<String, Integer> getSpecialTokens() {
+        return specialTokens;
+    }
+
+    public boolean isSpecialToken(int tokenIndex) {
+        return getTokenType(tokenIndex) != 1;
+    }
+
+    public int getTokenType(int tokenIndex) {
+        return tokenType[tokenIndex];
+    }
+
+    public MistralTokenizer(Vocabulary vocabulary, String regexPattern, Map<String, Integer> specialTokens, int[] tokenType) {
+        this.vocabulary = vocabulary;
+        this.compiledPattern = regexPattern != null ? Pattern.compile(regexPattern) : null;
+        this.specialTokens = new HashMap<>(specialTokens);
+        this.tokenType = tokenType;
+        this.byte0 = vocabulary.getIndex("<0x00>").orElseThrow();
+    }
+
+    List<Integer> encode(String text) {
+        return encodeImpl(text.replace(' ', '▁'));
+    }
+
+    private List<Integer> encodeImpl(String text) {
+
+        List<Integer> tokens = new ArrayList<>();
+
+        // first encode every individual codepoint in the input string
+        for (int i = 0, cpi; i < text.length(); i += Character.charCount(cpi)) {
+            cpi = text.codePointAt(i);
+
+            String singleCodepoint = Character.toString(cpi);
+            int id = vocabulary.getIndex(singleCodepoint).orElse(-1);
+
+            if (id != -1) {
+                // we found this codepoint in vocab, add it as a token
+                tokens.add(id);
+            } else {
+                // byte_fallback encoding: just encode each byte as a token
+                // +byte0 here to skip all the control and special tokens e.g. <unk>, <s>, </s>
+                // so the individual bytes only start at token <0x00>
+                for (byte b : singleCodepoint.getBytes(StandardCharsets.UTF_8)) {
+                    tokens.add(Byte.toUnsignedInt(b) + byte0);
+                }
+            }
+        }
+
+
+        // merge the best consecutive pair each iteration, according the scores in vocab_scores
+        while (true) {
+            float best_score = -1e10f;
+            int best_id = -1;
+            int best_idx = -1;
+
+            for (int i = 0; i < tokens.size() - 1; ++i) {
+                // check if we can merge the pair (tokens[i], tokens[i+1])
+                String str_buffer = vocabulary.get(tokens.get(i)) + vocabulary.get(tokens.get(i + 1));
+                int id = vocabulary.getIndex(str_buffer).orElse(-1);
+                if (id != -1 && vocabulary.getScore(id) > best_score) {
+                    // this merge pair exists in vocab! record its score and position
+                    best_score = vocabulary.getScore(id);
+                    best_id = id;
+                    best_idx = i;
+                }
+            }
+
+            if (best_idx == -1) {
+                break; // we couldn't find any more pairs to merge, so we're done
+            }
+
+            // merge the consecutive pair (best_idx, best_idx+1) into new token best_id
+            tokens.set(best_idx, best_id);
+            tokens.remove(best_idx + 1);
+        }
+
+        return tokens;
+    }
+
+    public String decode(List<Integer> tokens) {
+        StringBuilder sb = new StringBuilder();
+        for (int token : tokens) {
+            String tokenString = vocabulary.get(token);
+            if (isSpecialToken(token)) {
+                // some tokens designate raw bytes e.g. '<0x10>'
+                String prefix = "<0x";
+                String suffix = ">";
+                if (tokenString.length() == 6 && tokenString.startsWith(prefix) && tokenString.endsWith(suffix)) {
+                    String code = tokenString.substring(prefix.length(), tokenString.length() - suffix.length());
+                    int cp = Integer.parseInt(code, 16);
+                    tokenString = Character.toString(cp);
+                }
+            } else {
+                tokenString = tokenString.replace('▁', ' ');
+
+            }
+            sb.append(tokenString);
+        }
+        return sb.toString();
+    }
+
+    public static String replaceControlCharacters(int[] codePoints) {
+        // we don't want to print control characters
+        // which distort the output (e.g. \n or much worse)
+        // https://stackoverflow.com/questions/4324790/removing-control-characters-from-a-string-in-python/19016117#19016117
+        // http://www.unicode.org/reports/tr44/#GC_Values_Table\
+        StringBuilder chars = new StringBuilder();
+        for (int cp : codePoints) {
+            if (Character.getType(cp) == Character.CONTROL && cp != '\n') {
+                chars.append("\\u").append(HexFormat.of().toHexDigits(cp, 4)); // escape
+            } else {
+                chars.appendCodePoint(cp); // this character is ok
+            }
+        }
+        return chars.toString();
+    }
+
+    public static String replaceControlCharacters(String str) {
+        return replaceControlCharacters(str.codePoints().toArray());
+    }
+
+    public List<Integer> encodeAsList(String text) {
+        return encode(text);
+    }
+}
+
 
 final class Parallel {
     public static void parallelFor(int startInclusive, int endExclusive, IntConsumer action) {
@@ -2459,6 +2609,15 @@ record Vocabulary(String[] tokens, float[] scores, Map<String, Integer> tokenToI
     public int size() {
         return tokens.length;
     }
+    /**
+     * Added from Mistral Vocabulary - Groff
+     * @param tokenIndex
+     * @return
+     */
+    public float getScore(int tokenIndex) {
+        return scores[tokenIndex];
+    }
+
 }
 
 @FunctionalInterface
@@ -2574,10 +2733,13 @@ final class ToppSampler implements Sampler {
     }
 }
 
+interface ChatFormatInterface {
+	
+}
 /**
  * Utility tailored for Llama 3 instruct prompt format.
  */
-class ChatFormat {
+class ChatFormat implements ChatFormatInterface{
 
     final Tokenizer tokenizer;
     final int beginOfText;
@@ -2651,6 +2813,78 @@ class ChatFormat {
         }
     }
 }
+
+/**
+* Utility tailored for Mistral v0.3 instruct prompt format.
+*/
+class MistralChatFormat implements ChatFormatInterface {
+
+   protected final MistralTokenizer tokenizer;
+   protected final int unknownToken;
+   protected final int beginOfText;
+   protected final int endOfText;
+   protected final int beginOfInstruction;
+   protected final int endOfInstruction;
+   protected final int toolCalls;
+   protected final int beginOfAvailableTools;
+   protected final int endOfAvailableTools;
+   protected final int beginOfToolResults;
+   protected final int endOfToolResults;
+   protected final int prefix;
+   protected final int middle;
+   protected final int suffix;
+
+   public MistralChatFormat(MistralTokenizer tokenizer) {
+       this.tokenizer = tokenizer;
+       Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
+       this.unknownToken = specialTokens.get("<unk>");
+       this.beginOfText = specialTokens.get("<s>");
+       this.endOfText = specialTokens.get("</s>");
+       this.beginOfInstruction = specialTokens.get("[INST]");
+       this.endOfInstruction = specialTokens.get("[/INST]");
+       this.toolCalls = specialTokens.get("[TOOL_CALLS]");
+       this.beginOfAvailableTools = specialTokens.get("[AVAILABLE_TOOLS]");
+       this.endOfAvailableTools = specialTokens.get("[/AVAILABLE_TOOLS]");
+       this.beginOfToolResults = specialTokens.get("[TOOL_RESULTS]");
+       this.endOfToolResults = specialTokens.get("[/TOOL_RESULTS]");
+       // Only Codestral supports FIM tokens.
+       this.prefix = specialTokens.getOrDefault("[PREFIX]", unknownToken);
+       this.suffix = specialTokens.getOrDefault("[SUFFIX]", unknownToken);
+       this.middle = specialTokens.getOrDefault("[MIDDLE]", unknownToken);
+   }
+
+   public MistralTokenizer getTokenizer() {
+       return tokenizer;
+   }
+
+   public Set<Integer> getStopTokens() {
+       return Set.of(endOfText);
+   }
+
+   public List<Integer> encodeMessage(String userMessage, boolean addHeader, boolean addFooter) {
+       List<Integer> tokens = new ArrayList<>();
+       if (addHeader) {
+           tokens.add(this.beginOfInstruction);
+       }
+       if (userMessage != null) {
+           tokens.addAll(this.tokenizer.encodeAsList(userMessage.strip()));
+       }
+       if (addFooter) {
+           tokens.add(endOfInstruction);
+       }
+       return tokens;
+   }
+
+   public List<Integer> encodeFillInTheMiddle(String prefix, String suffix) {
+       List<Integer> tokens = new ArrayList<>();
+       tokens.add(this.suffix);
+       tokens.addAll(tokenizer.encode(suffix));
+       tokens.add(this.prefix);
+       tokens.addAll(tokenizer.encode(prefix));
+       return tokens;
+   }
+}
+
 
 /**
  * Support for AOT preloading of GGUF metadata with GraalVM's Native Image.
