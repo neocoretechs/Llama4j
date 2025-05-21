@@ -854,17 +854,23 @@ interface Timer extends AutoCloseable {
 }
 
 final class ModelLoader {
-    private static final String TOKENIZER_LLAMA_3_MODEL = "gpt2";
+    private static final String TOKENIZER_LLAMA_3_MODEL = "gpt2"; // Llama3 uses gpt2!
+    private static final String TOKENIZER_LLAMA_MODEL = "llama"; // non Llama uses llama!
 
     private static final String LLAMA_3_PATTERN = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
     private static Vocabulary loadVocabulary(Map<String, Object> metadata) {
         String model = (String) metadata.get("tokenizer.ggml.model");
-        if (!TOKENIZER_LLAMA_3_MODEL.equals(model)) {
-            throw new IllegalArgumentException("expected " + TOKENIZER_LLAMA_3_MODEL + " but found " + model);
+        if (!TOKENIZER_LLAMA_3_MODEL.equals(model) && !TOKENIZER_LLAMA_MODEL.equals(model)) {
+            throw new IllegalArgumentException("expected " + TOKENIZER_LLAMA_3_MODEL + " or "+ TOKENIZER_LLAMA_MODEL+ " but found " + model);
         }
         String[] tokens = (String[]) metadata.get("tokenizer.ggml.tokens");
-        return new Vocabulary(tokens, null);
+        if(TOKENIZER_LLAMA_MODEL.equals(model)) {
+        	float[] scores = (float[]) metadata.get("tokenizer.ggml.scores");
+        	return new Vocabulary(tokens, scores);
+        } else {
+        	return new Vocabulary(tokens, null);
+        }
     }
 
     public static Llama loadModel(Path ggufPath, int contextLength, boolean loadWeights) throws IOException {
@@ -874,10 +880,15 @@ final class ModelLoader {
     }
 
     public static Llama loadModel(FileChannel fileChannel, GGUF gguf, int contextLength, boolean loadWeights) throws IOException {
-        try (var ignored = Timer.log("Load LlaMa model")) {
+        try (var ignored = Timer.log("Load model")) {
             Map<String, Object> metadata = gguf.getMetadata();
             Vocabulary vocabulary = loadVocabulary(metadata);
-            Tokenizer tokenizer = createTokenizer(metadata, vocabulary);
+            TokenizerInterface tokenizer;
+            // from loadVocabulary, did we construct Vocabulary with null scores? if so then its a GPT2 (Llama3) vocabulary
+            if(vocabulary.scoresNull())
+            	tokenizer = createGPT2Tokenizer(metadata, vocabulary);
+            else
+            	tokenizer = createLlamaTokenizer(metadata, vocabulary);
 
             Llama.Configuration config = new Llama.Configuration(
                     (int) metadata.get("llama.embedding_length"),
@@ -938,7 +949,7 @@ final class ModelLoader {
         return qw;
     }
 
-    private static Tokenizer createTokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
+    private static Tokenizer createGPT2Tokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
         String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
         List<Pair<Integer, Integer>> merges = Arrays.stream(mergeLines)
                 .map(line -> line.split(" "))
@@ -964,6 +975,19 @@ final class ModelLoader {
                         );
 
         return new Tokenizer(vocabulary, merges, LLAMA_3_PATTERN, specialTokens);
+    }
+    
+    private static MistralTokenizer createLlamaTokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
+        int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
+        List<Integer> specialTokensList = IntStream.range(0, vocabulary.size()).filter(t -> tokenTypes[t] != 1 && tokenTypes[t] != 6).boxed().toList();
+        Map<String, Integer> specialTokens =
+                IntStream.range(0, specialTokensList.size())
+                        .boxed()
+                        .collect(Collectors.toMap(
+                                t -> vocabulary.get(t),
+                                t -> t)
+                        );
+        return new MistralTokenizer(vocabulary, null, specialTokens, tokenTypes);
     }
 
     public static FloatTensor loadQuantized(GGMLTensorEntry entry) {
@@ -1003,7 +1027,7 @@ final class ModelLoader {
     }
 }
 
-record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) {
+record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights weights) {
     public State createNewState(int batchsize) {
         State state = new State(configuration(), batchsize);
         state.latestToken = tokenizer.getSpecialTokens().get("<|begin_of_text|>");
@@ -1383,7 +1407,9 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
 }
 
 interface TokenizerInterface {
-	
+	 public Map<String, Integer> getSpecialTokens();
+	 public boolean isSpecialToken(int tokenIndex);
+	 public String decode(List<Integer> tokens);
 }
 /**
  * Byte Pair Encoding tokenizer.
@@ -2617,6 +2643,10 @@ record Vocabulary(String[] tokens, float[] scores, Map<String, Integer> tokenToI
     public float getScore(int tokenIndex) {
         return scores[tokenIndex];
     }
+    
+    public boolean scoresNull() {
+    	return scores == null;
+    }
 
 }
 
@@ -2734,7 +2764,12 @@ final class ToppSampler implements Sampler {
 }
 
 interface ChatFormatInterface {
-	
+	 public TokenizerInterface getTokenizer();
+	 public Set<Integer> getStopTokens();
+	 public List<Integer> encodeHeader(ChatFormat.Message message);
+	 public List<Integer> encodeMessage(ChatFormat.Message message);
+	 public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<ChatFormat.Message> dialog);
+	 
 }
 /**
  * Utility tailored for Llama 3 instruct prompt format.
@@ -2750,8 +2785,8 @@ class ChatFormat implements ChatFormatInterface{
     final int endOfMessage;
     final Set<Integer> stopTokens;
 
-    public ChatFormat(Tokenizer tokenizer) {
-        this.tokenizer = tokenizer;
+    public ChatFormat(TokenizerInterface tokenizer) {
+        this.tokenizer = (Tokenizer)tokenizer;
         Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
         this.beginOfText = specialTokens.get("<|begin_of_text|>");
         this.startHeader = specialTokens.get("<|start_header_id|>");
@@ -2762,7 +2797,7 @@ class ChatFormat implements ChatFormatInterface{
         this.stopTokens = Set.of(endOfText, endOfTurn);
     }
 
-    public Tokenizer getTokenizer() {
+    public TokenizerInterface getTokenizer() {
         return tokenizer;
     }
 
@@ -2834,8 +2869,8 @@ class MistralChatFormat implements ChatFormatInterface {
    protected final int middle;
    protected final int suffix;
 
-   public MistralChatFormat(MistralTokenizer tokenizer) {
-       this.tokenizer = tokenizer;
+   public MistralChatFormat(TokenizerInterface tokenizer) {
+       this.tokenizer = (MistralTokenizer)tokenizer;
        Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
        this.unknownToken = specialTokens.get("<unk>");
        this.beginOfText = specialTokens.get("<s>");
@@ -2853,7 +2888,7 @@ class MistralChatFormat implements ChatFormatInterface {
        this.middle = specialTokens.getOrDefault("[MIDDLE]", unknownToken);
    }
 
-   public MistralTokenizer getTokenizer() {
+   public TokenizerInterface getTokenizer() {
        return tokenizer;
    }
 
@@ -2883,6 +2918,37 @@ class MistralChatFormat implements ChatFormatInterface {
        tokens.addAll(tokenizer.encode(prefix));
        return tokens;
    }
+   
+   public List<Integer> encodeHeader(ChatFormat.Message message) {
+       List<Integer> tokens = new ArrayList<>();
+       tokens.add(this.beginOfInstruction);
+       tokens.addAll(this.tokenizer.encodeAsList(message.role().name()));
+       tokens.add(endOfInstruction);
+       return tokens;
+   }
+
+   public List<Integer> encodeMessage(ChatFormat.Message message) {
+	   List<Integer> tokens = new ArrayList<>();
+	   tokens.add(this.beginOfInstruction);
+       tokens.addAll(this.tokenizer.encodeAsList(message.content().strip()));
+       tokens.add(endOfInstruction);
+       return tokens;
+   }
+
+   public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<ChatFormat.Message> dialog) {
+       List<Integer> tokens = new ArrayList<>();
+       tokens.add(beginOfText);
+       for (ChatFormat.Message message : dialog) {
+           tokens.addAll(this.encodeMessage(message));
+       }
+       //if (appendAssistantTurn) {
+       //    // Add the start of an assistant message for the model to complete.
+       //    tokens.addAll(this.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+       //}
+       tokens.add(endOfText);
+       return tokens;
+   }
+   
 }
 
 
