@@ -855,22 +855,23 @@ interface Timer extends AutoCloseable {
 }
 
 final class ModelLoader {
-    private static final String TOKENIZER_LLAMA_3_MODEL = "gpt2"; // Llama3 uses gpt2!
+    private static final String TOKENIZER_GPT2_MODEL = "gpt2"; // Llama3 uses gpt2!
     private static final String TOKENIZER_LLAMA_MODEL = "llama"; // non Llama uses llama!
 
     private static final String LLAMA_3_PATTERN = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
     private static Vocabulary loadVocabulary(Map<String, Object> metadata) {
         String model = (String) metadata.get("tokenizer.ggml.model");
-        if (!TOKENIZER_LLAMA_3_MODEL.equals(model) && !TOKENIZER_LLAMA_MODEL.equals(model)) {
-            throw new IllegalArgumentException("expected " + TOKENIZER_LLAMA_3_MODEL + " or "+ TOKENIZER_LLAMA_MODEL+ " but found " + model);
-        }
         String[] tokens = (String[]) metadata.get("tokenizer.ggml.tokens");
         if(TOKENIZER_LLAMA_MODEL.equals(model)) {
         	float[] scores = (float[]) metadata.get("tokenizer.ggml.scores");
         	return new Vocabulary(tokens, scores);
         } else {
-        	return new Vocabulary(tokens, null);
+        	if(TOKENIZER_GPT2_MODEL.equals(model)) {
+        		return new Vocabulary(tokens, null);
+        	} else {
+        		throw new IllegalArgumentException("expected " + TOKENIZER_GPT2_MODEL + " or "+ TOKENIZER_LLAMA_MODEL+ " but found " + model);
+        	}
         }
     }
 
@@ -883,66 +884,72 @@ final class ModelLoader {
     public static Llama loadModel(FileChannel fileChannel, GGUF gguf, int contextLength, boolean loadWeights) throws IOException {
         try (var ignored = Timer.log("Load model")) {
             Map<String, Object> metadata = gguf.getMetadata();
+            System.out.println("GGUF metadata:\r\n"+metadata);
             Vocabulary vocabulary = loadVocabulary(metadata);
             TokenizerInterface tokenizer;
             Llama.Configuration config;
             Llama.Weights weights = null;
-            // from loadVocabulary, did we construct Vocabulary with null scores? if so then its a GPT2 (Llama3) vocabulary
-            if(vocabulary.scoresNull()) {
+            String arch = (String) metadata.get("general.architecture");
+            String model = (String) metadata.get("tokenizer.ggml.model");
+            if(TOKENIZER_GPT2_MODEL.equals(model)) {
             	tokenizer = createGPT2Tokenizer(metadata, vocabulary);
-            	config = createGPT2Config(metadata, vocabulary, contextLength);
+            	config = createGPT2Config(arch, metadata, vocabulary, contextLength);
                 if (loadWeights) {
                 	// loadTensors corresponds to getTensorEntries in old version
                     Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
                     weights = loadGPT2Weights(tensorEntries, config);
                 }
             } else {
-            	tokenizer = createLlamaTokenizer(metadata, vocabulary);
-            	config = createLlamaConfig(metadata, vocabulary, contextLength);
-                if (loadWeights) {
-                	// loadTensors corresponds to getTensorEntries in old version
-                    Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
-                    weights = loadLlamaWeights(tensorEntries, config);
-                }
+            	if(TOKENIZER_LLAMA_MODEL.equals(model)) {
+            		tokenizer = createLlamaTokenizer(metadata, vocabulary);
+            		config = createLlamaConfig(arch, metadata, vocabulary, contextLength);
+            		if (loadWeights) {
+            			// loadTensors corresponds to getTensorEntries in old version
+            			Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
+            			weights = loadLlamaWeights(tensorEntries, config);
+            		}
+            	} else {
+            		throw new IllegalArgumentException("expected " + TOKENIZER_GPT2_MODEL + " or "+ TOKENIZER_LLAMA_MODEL+ " but found " + model);
+            	}
             }
             return new Llama(config, tokenizer, weights);
         }
     }
     
-    static Llama.Configuration createGPT2Config( Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
+    static Llama.Configuration createGPT2Config(String arch, Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
         Llama.Configuration config = new Llama.Configuration(
-                (int) metadata.get("llama.embedding_length"),
-                (int) metadata.get("llama.feed_forward_length"),
-                (int) metadata.get("llama.block_count"),
-                (int) metadata.get("llama.attention.head_count"),
+                (int) metadata.get(arch+".embedding_length"),
+                (int) metadata.get(arch+".feed_forward_length"),
+                (int) metadata.get(arch+".block_count"),
+                (int) metadata.get(arch+".attention.head_count"),
 
-                metadata.containsKey("llama.attention.head_count_kv")
-                        ? (int) metadata.get("llama.attention.head_count_kv")
-                        : (int) metadata.get("llama.attention.head_count"),
+                metadata.containsKey(arch+".attention.head_count_kv")
+                        ? (int) metadata.get(arch+".attention.head_count_kv")
+                        : (int) metadata.get(arch+".attention.head_count"),
 
                 vocabulary.size(),
-                (int) metadata.get("llama.context_length"),
-                (float) metadata.getOrDefault("llama.attention.layer_norm_rms_epsilon", 1e-5f),
-                (float) metadata.getOrDefault("llama.rope.freq_base", 10000f)
+                (int) metadata.get(arch+".context_length"),
+                (float) metadata.getOrDefault(arch+".attention.layer_norm_rms_epsilon", 1e-5f),
+                (float) metadata.getOrDefault(arch+".rope.freq_base", 10000f)
         ).withContextLength(contextLength);
         return config;
     }
     
-    static Llama.Configuration createLlamaConfig( Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
+    static Llama.Configuration createLlamaConfig(String arch, Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
         Llama.Configuration config = new Llama.Configuration(
-                (int) metadata.get("llama.embedding_length"),
-                (int) metadata.get("llama.feed_forward_length"),
-                (int) metadata.get("llama.block_count"),
-                (int) metadata.get("llama.attention.head_count"),
+                (int) metadata.get(arch+".embedding_length"),
+                (int) metadata.get(arch+".feed_forward_length"),
+                (int) metadata.get(arch+".block_count"),
+                (int) metadata.get(arch+".attention.head_count"),
 
-                metadata.containsKey("llama.attention.head_count_kv")
-                        ? (int) metadata.get("llama.attention.head_count_kv")
-                        : (int) metadata.get("llama.attention.head_count"),
+                metadata.containsKey(arch+".attention.head_count_kv")
+                        ? (int) metadata.get(arch+".attention.head_count_kv")
+                        : (int) metadata.get(arch+".attention.head_count"),
 
                 vocabulary.size(),
                 contextLength,
-                (float) metadata.getOrDefault("llama.attention.layer_norm_rms_epsilon", 1e-5f),
-                (float) metadata.getOrDefault("llama.rope.freq_base", 10000f)
+                (float) metadata.getOrDefault(arch+".attention.layer_norm_rms_epsilon", 1e-5f),
+                (float) metadata.getOrDefault(arch+".rope.freq_base", 10000f)
         );
         return config;
     }
@@ -1052,8 +1059,9 @@ final class ModelLoader {
 
     public static FloatTensor loadQuantized(GGMLTensorEntry entry) {
         GGMLType ggmlType = entry.ggmlType();
+        System.out.println("Quantization format " + ggmlType);
         return switch (ggmlType) {
-            //case F32 -> new F32FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
+            case F32 -> new F32FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
             case Q8_0 -> new Q8_0FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
             case Q4_0 -> new Q4_0FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
             case BF16 -> new BF16FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
@@ -1996,7 +2004,17 @@ abstract class FloatTensor {
         return memorySegment.get(ValueLayout.JAVA_SHORT, offset);
         //return UNSAFE.getShort(memorySegment.address() + offset);
     }
-
+    
+    static int readInt(MemorySegment memorySegment, long offset) {
+        return memorySegment.get(ValueLayout.JAVA_INT, offset);
+        //return UNSAFE.getShort(memorySegment.address() + offset);
+    }
+    
+    static float readFloat(MemorySegment memorySegment, long offset) {
+        return memorySegment.get(ValueLayout.JAVA_FLOAT, offset);
+        //return UNSAFE.getShort(memorySegment.address() + offset);
+    }
+    
     static byte readByte(MemorySegment memorySegment, long offset) {
         return memorySegment.get(ValueLayout.JAVA_BYTE, offset);
         //return UNSAFE.getByte(memorySegment.address() + offset);
@@ -2179,6 +2197,7 @@ abstract class FloatTensor {
         return this;
     }
 }
+
 
 /**
  * {@link FloatTensor} quantized in the {@link GGMLType#Q4_0} format.
@@ -2590,6 +2609,43 @@ final class F16FloatTensor extends FloatTensor {
 
         return result;
     }
+}
+
+final class F32FloatTensor extends FloatTensor {
+	final int size;
+	final MemorySegment memorySegment;
+	
+	public F32FloatTensor(int size, MemorySegment memorySegment) {
+		this.size = size;
+		this.memorySegment = memorySegment;
+	}
+
+	@Override
+	int size() {
+		return size;
+	}
+
+	@Override
+	float getFloat(int index) {
+		assert 0 <= index && index < size;
+		return readFloat(memorySegment, index * 4);
+	}
+
+	@Override
+	void setFloat(int index, float value) {
+		throw new UnsupportedOperationException("setFloat");	
+	}
+
+	@Override
+	FloatVector getFloatVector(VectorSpecies<Float> species, int offset) {
+		 throw new UnsupportedOperationException("getFloatVector");
+	}
+
+	@Override
+	GGMLType type() {
+		return GGMLType.F32;
+	}
+	
 }
 
 final class ArrayFloatTensor extends FloatTensor {
