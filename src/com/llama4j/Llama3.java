@@ -176,7 +176,7 @@ public class Llama3 {
             	}
             }
             if (state == null) {
-                state = model.createNewState(BATCH_SIZE);
+                state = model.createNewState(BATCH_SIZE, chatFormat.getBeginOfText());
             }
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
             conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
@@ -224,7 +224,6 @@ public class Llama3 {
     }
 
     static void runInstructOnce(Llama model, Sampler sampler, Options options) {
-        Llama.State state = model.createNewState(BATCH_SIZE);
         ChatFormatInterface chatFormat;
         if(ModelLoader.TOKENIZER_LLAMA_MODEL.equals(ModelLoader.model)) {
         	chatFormat = new MistralChatFormat(model.tokenizer());
@@ -235,6 +234,7 @@ public class Llama3 {
         		throw new IllegalArgumentException("expected " + ModelLoader.TOKENIZER_GPT2_MODEL + " or "+ ModelLoader.TOKENIZER_LLAMA_MODEL+ " but found " + ModelLoader.model);
         	}
         }
+        Llama.State state = model.createNewState(BATCH_SIZE, chatFormat.getBeginOfText());
         List<Integer> promptTokens = new ArrayList<>();
         promptTokens.add(chatFormat.getBeginOfText());
         if (options.systemPrompt() != null) {
@@ -1113,9 +1113,9 @@ final class ModelLoader {
 }
 
 record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights weights) {
-    public State createNewState(int batchsize) {
+    public State createNewState(int batchsize, int beginOfText) {
         State state = new State(configuration(), batchsize);
-        state.latestToken = tokenizer.getSpecialTokens().get("<|begin_of_text|>");
+        state.latestToken = beginOfText; // was tokenizer.getSpecialTokens().get("<|begin_of_text|>");, now we get from ChatFormat.beginOfText() which does the same
         return state;
     }
 
