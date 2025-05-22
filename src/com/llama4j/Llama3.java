@@ -104,8 +104,17 @@ public class Llama3 {
     static void runInteractive(Llama model, Sampler sampler, Options options) {
         Llama.State state = null;
         List<Integer> conversationTokens = new ArrayList<>();
-        ChatFormat chatFormat = new ChatFormat(model.tokenizer());
-        conversationTokens.add(chatFormat.beginOfText);
+        ChatFormatInterface chatFormat;
+        if(ModelLoader.TOKENIZER_LLAMA_MODEL.equals(ModelLoader.model)) {
+        	chatFormat = new MistralChatFormat(model.tokenizer());
+        } else {
+        	if(ModelLoader.TOKENIZER_GPT2_MODEL.equals(ModelLoader.model)) {
+        		chatFormat = new ChatFormat(model.tokenizer());
+        	} else {
+        		throw new IllegalArgumentException("expected " + ModelLoader.TOKENIZER_GPT2_MODEL + " or "+ ModelLoader.TOKENIZER_LLAMA_MODEL+ " but found " + ModelLoader.model);
+        	}
+        }
+        conversationTokens.add(chatFormat.getBeginOfText());
         if (options.systemPrompt() != null) {
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt())));
         }
@@ -216,10 +225,18 @@ public class Llama3 {
 
     static void runInstructOnce(Llama model, Sampler sampler, Options options) {
         Llama.State state = model.createNewState(BATCH_SIZE);
-        ChatFormat chatFormat = new ChatFormat(model.tokenizer());
-
+        ChatFormatInterface chatFormat;
+        if(ModelLoader.TOKENIZER_LLAMA_MODEL.equals(ModelLoader.model)) {
+        	chatFormat = new MistralChatFormat(model.tokenizer());
+        } else {
+        	if(ModelLoader.TOKENIZER_GPT2_MODEL.equals(ModelLoader.model)) {
+        		chatFormat = new ChatFormat(model.tokenizer());
+        	} else {
+        		throw new IllegalArgumentException("expected " + ModelLoader.TOKENIZER_GPT2_MODEL + " or "+ ModelLoader.TOKENIZER_LLAMA_MODEL+ " but found " + ModelLoader.model);
+        	}
+        }
         List<Integer> promptTokens = new ArrayList<>();
-        promptTokens.add(chatFormat.beginOfText);
+        promptTokens.add(chatFormat.getBeginOfText());
         if (options.systemPrompt() != null) {
             promptTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt())));
         }
@@ -457,10 +474,8 @@ public class Llama3 {
     public static void main(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
         Llama model = AOT.tryUsePreLoaded(options.modelPath(), options.maxTokens());
-        if (model == null) {
-            // No compatible preloaded model found, fallback to fully parse and load the specified file.
-            model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
-        }
+        if(model == null)
+        	model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
         Sampler sampler = selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
         if (options.interactive()) {
             runInteractive(model, sampler, options);
@@ -831,6 +846,7 @@ final class GGUF {
     }
 }
 
+
 interface Timer extends AutoCloseable {
     @Override
     void close(); // no Exception
@@ -853,15 +869,18 @@ interface Timer extends AutoCloseable {
         };
     }
 }
-
+/**
+ * Load model, get GGUF metadata, load vocabulary, create tokenizer, create config, if loadWeights - load tensors, load weights
+ * create Llama with config, tokenizer, weights
+ */
 final class ModelLoader {
-    private static final String TOKENIZER_GPT2_MODEL = "gpt2"; // Llama3 uses gpt2!
-    private static final String TOKENIZER_LLAMA_MODEL = "llama"; // non Llama uses llama!
-
+    static final String TOKENIZER_GPT2_MODEL = "gpt2"; // Llama3 uses gpt2!
+    static final String TOKENIZER_LLAMA_MODEL = "llama"; // non Llama uses llama!
+    public static String model = "gpt2"; // default for Llama models!
     private static final String LLAMA_3_PATTERN = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
     private static Vocabulary loadVocabulary(Map<String, Object> metadata) {
-        String model = (String) metadata.get("tokenizer.ggml.model");
+        model = (String) metadata.get("tokenizer.ggml.model");
         String[] tokens = (String[]) metadata.get("tokenizer.ggml.tokens");
         if(TOKENIZER_LLAMA_MODEL.equals(model)) {
         	float[] scores = (float[]) metadata.get("tokenizer.ggml.scores");
@@ -890,7 +909,6 @@ final class ModelLoader {
             Llama.Configuration config;
             Llama.Weights weights = null;
             String arch = (String) metadata.get("general.architecture");
-            String model = (String) metadata.get("tokenizer.ggml.model");
             if(TOKENIZER_GPT2_MODEL.equals(model)) {
             	tokenizer = createGPT2Tokenizer(metadata, vocabulary);
             	config = createGPT2Config(arch, metadata, vocabulary, contextLength);
@@ -1059,7 +1077,6 @@ final class ModelLoader {
 
     public static FloatTensor loadQuantized(GGMLTensorEntry entry) {
         GGMLType ggmlType = entry.ggmlType();
-        System.out.println("Quantization format " + ggmlType);
         return switch (ggmlType) {
             case F32 -> new F32FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
             case Q8_0 -> new Q8_0FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
@@ -2923,12 +2940,12 @@ interface ChatFormatInterface {
 	 public List<Integer> encodeHeader(ChatFormat.Message message);
 	 public List<Integer> encodeMessage(ChatFormat.Message message);
 	 public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<ChatFormat.Message> dialog);
-	 
+	 public int getBeginOfText();
 }
 /**
  * Utility tailored for Llama 3 instruct prompt format.
  */
-class ChatFormat implements ChatFormatInterface{
+class ChatFormat implements ChatFormatInterface {
 
     final Tokenizer tokenizer;
     final int beginOfText;
@@ -2950,15 +2967,19 @@ class ChatFormat implements ChatFormatInterface{
         this.endOfMessage = specialTokens.getOrDefault("<|eom_id|>", -1); // only in 3.1
         this.stopTokens = Set.of(endOfText, endOfTurn);
     }
-
+    @Override
     public TokenizerInterface getTokenizer() {
         return tokenizer;
     }
-
+    @Override
     public Set<Integer> getStopTokens() {
         return stopTokens;
     }
-
+    @Override
+    public int getBeginOfText() {
+    	return beginOfText;
+    }
+    @Override
     public List<Integer> encodeHeader(ChatFormat.Message message) {
         List<Integer> tokens = new ArrayList<>();
         tokens.add(startHeader);
@@ -2967,14 +2988,14 @@ class ChatFormat implements ChatFormatInterface{
         tokens.addAll(this.tokenizer.encodeAsList("\n"));
         return tokens;
     }
-
+    @Override
     public List<Integer> encodeMessage(ChatFormat.Message message) {
         List<Integer> tokens = this.encodeHeader(message);
         tokens.addAll(this.tokenizer.encodeAsList(message.content().strip()));
         tokens.add(endOfTurn);
         return tokens;
     }
-
+    @Override
     public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<ChatFormat.Message> dialog) {
         List<Integer> tokens = new ArrayList<>();
         tokens.add(beginOfText);
@@ -3041,15 +3062,19 @@ class MistralChatFormat implements ChatFormatInterface {
        this.suffix = specialTokens.getOrDefault("[SUFFIX]", unknownToken);
        this.middle = specialTokens.getOrDefault("[MIDDLE]", unknownToken);
    }
-
+   @Override
    public TokenizerInterface getTokenizer() {
        return tokenizer;
    }
-
+   @Override
    public Set<Integer> getStopTokens() {
        return Set.of(endOfText);
    }
-
+   @Override
+   public int getBeginOfText() {
+   	return beginOfText;
+   }
+ 
    public List<Integer> encodeMessage(String userMessage, boolean addHeader, boolean addFooter) {
        List<Integer> tokens = new ArrayList<>();
        if (addHeader) {
@@ -3072,7 +3097,7 @@ class MistralChatFormat implements ChatFormatInterface {
        tokens.addAll(tokenizer.encode(prefix));
        return tokens;
    }
-   
+   @Override
    public List<Integer> encodeHeader(ChatFormat.Message message) {
        List<Integer> tokens = new ArrayList<>();
        tokens.add(this.beginOfInstruction);
@@ -3080,7 +3105,7 @@ class MistralChatFormat implements ChatFormatInterface {
        tokens.add(endOfInstruction);
        return tokens;
    }
-
+   @Override
    public List<Integer> encodeMessage(ChatFormat.Message message) {
 	   List<Integer> tokens = new ArrayList<>();
 	   tokens.add(this.beginOfInstruction);
@@ -3088,7 +3113,7 @@ class MistralChatFormat implements ChatFormatInterface {
        tokens.add(endOfInstruction);
        return tokens;
    }
-
+   @Override
    public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<ChatFormat.Message> dialog) {
        List<Integer> tokens = new ArrayList<>();
        tokens.add(beginOfText);
@@ -3104,7 +3129,6 @@ class MistralChatFormat implements ChatFormatInterface {
    }
    
 }
-
 
 /**
  * Support for AOT preloading of GGUF metadata with GraalVM's Native Image.
