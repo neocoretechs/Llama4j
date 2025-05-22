@@ -16,6 +16,7 @@
 // To run just:
 // jbang Llama3.java --help
 //
+// Remember: Llama models use GPT2 vocabulary while non-Llama models use Llama vocabulary!
 // Enjoy!
 package com.llama4j;
 
@@ -884,38 +885,74 @@ final class ModelLoader {
             Map<String, Object> metadata = gguf.getMetadata();
             Vocabulary vocabulary = loadVocabulary(metadata);
             TokenizerInterface tokenizer;
-            // from loadVocabulary, did we construct Vocabulary with null scores? if so then its a GPT2 (Llama3) vocabulary
-            if(vocabulary.scoresNull())
-            	tokenizer = createGPT2Tokenizer(metadata, vocabulary);
-            else
-            	tokenizer = createLlamaTokenizer(metadata, vocabulary);
-
-            Llama.Configuration config = new Llama.Configuration(
-                    (int) metadata.get("llama.embedding_length"),
-                    (int) metadata.get("llama.feed_forward_length"),
-                    (int) metadata.get("llama.block_count"),
-                    (int) metadata.get("llama.attention.head_count"),
-
-                    metadata.containsKey("llama.attention.head_count_kv")
-                            ? (int) metadata.get("llama.attention.head_count_kv")
-                            : (int) metadata.get("llama.attention.head_count"),
-
-                    vocabulary.size(),
-                    (int) metadata.get("llama.context_length"),
-                    (float) metadata.getOrDefault("llama.attention.layer_norm_rms_epsilon", 1e-5f),
-                    (float) metadata.getOrDefault("llama.rope.freq_base", 10000f)
-            ).withContextLength(contextLength);
-
+            Llama.Configuration config;
             Llama.Weights weights = null;
-            if (loadWeights) {
-                Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
-                weights = loadWeights(tensorEntries, config);
+            // from loadVocabulary, did we construct Vocabulary with null scores? if so then its a GPT2 (Llama3) vocabulary
+            if(vocabulary.scoresNull()) {
+            	tokenizer = createGPT2Tokenizer(metadata, vocabulary);
+            	config = createGPT2Config(metadata, vocabulary, contextLength);
+                if (loadWeights) {
+                	// loadTensors corresponds to getTensorEntries in old version
+                    Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
+                    weights = loadGPT2Weights(tensorEntries, config);
+                }
+            } else {
+            	tokenizer = createLlamaTokenizer(metadata, vocabulary);
+            	config = createLlamaConfig(metadata, vocabulary, contextLength);
+                if (loadWeights) {
+                	// loadTensors corresponds to getTensorEntries in old version
+                    Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
+                    weights = loadLlamaWeights(tensorEntries, config);
+                }
             }
             return new Llama(config, tokenizer, weights);
         }
     }
+    
+    static Llama.Configuration createGPT2Config( Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
+        Llama.Configuration config = new Llama.Configuration(
+                (int) metadata.get("llama.embedding_length"),
+                (int) metadata.get("llama.feed_forward_length"),
+                (int) metadata.get("llama.block_count"),
+                (int) metadata.get("llama.attention.head_count"),
 
-    static Llama.Weights loadWeights(Map<String, GGMLTensorEntry> tensorEntries, Llama.Configuration config) {
+                metadata.containsKey("llama.attention.head_count_kv")
+                        ? (int) metadata.get("llama.attention.head_count_kv")
+                        : (int) metadata.get("llama.attention.head_count"),
+
+                vocabulary.size(),
+                (int) metadata.get("llama.context_length"),
+                (float) metadata.getOrDefault("llama.attention.layer_norm_rms_epsilon", 1e-5f),
+                (float) metadata.getOrDefault("llama.rope.freq_base", 10000f)
+        ).withContextLength(contextLength);
+        return config;
+    }
+    
+    static Llama.Configuration createLlamaConfig( Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
+        Llama.Configuration config = new Llama.Configuration(
+                (int) metadata.get("llama.embedding_length"),
+                (int) metadata.get("llama.feed_forward_length"),
+                (int) metadata.get("llama.block_count"),
+                (int) metadata.get("llama.attention.head_count"),
+
+                metadata.containsKey("llama.attention.head_count_kv")
+                        ? (int) metadata.get("llama.attention.head_count_kv")
+                        : (int) metadata.get("llama.attention.head_count"),
+
+                vocabulary.size(),
+                contextLength,
+                (float) metadata.getOrDefault("llama.attention.layer_norm_rms_epsilon", 1e-5f),
+                (float) metadata.getOrDefault("llama.rope.freq_base", 10000f)
+        );
+        return config;
+    }
+    /**
+     * Called from AOT.tryUsePreloaded and ModelLoader.loadModel
+     * @param tensorEntries
+     * @param config
+     * @return
+     */
+    static Llama.Weights loadGPT2Weights(Map<String, GGMLTensorEntry> tensorEntries, Llama.Configuration config) {
         boolean ropeScaling = tensorEntries.containsKey("rope_freqs");
         float scaleFactor = 8;
         float loFreqFactor = 1;
@@ -945,10 +982,33 @@ final class ModelLoader {
                 // This is commonly referred as "tie word embeddings".
                 loadQuantized(tensorEntries.getOrDefault("output.weight", tokenEmbeddings))
         );
-
         return qw;
     }
+    
+    static Llama.Weights loadLlamaWeights(Map<String, GGMLTensorEntry> tensorEntries, Llama.Configuration config) {
+    	   Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLength, config.headSize, config.ropeTheta);
+           float[] ropeFreqsReal = ropeFreqs.first();
+           float[] ropeFreqsImag = ropeFreqs.second();
 
+           Llama.Weights qw = new Llama.Weights(
+                   loadQuantized(tensorEntries.get("token_embd.weight")),
+                   loadArrayOfFloatBuffer(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")),
+                   loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_q.weight")),
+                   loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
+                   loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
+                   loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
+                   loadArrayOfFloatBuffer(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
+                   loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")), // w1
+                   loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_down.weight")), // w2
+                   loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_up.weight")), // w3
+                   toFloatBuffer(tensorEntries.get("output_norm.weight")),
+                   FloatBuffer.wrap(ropeFreqsReal),
+                   FloatBuffer.wrap(ropeFreqsImag),
+                   loadQuantized(tensorEntries.get("output.weight"))
+           );
+           return qw;
+    }
+    
     private static Tokenizer createGPT2Tokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
         String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
         List<Pair<Integer, Integer>> merges = Arrays.stream(mergeLines)
@@ -1065,6 +1125,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             this.ropeTheta = ropeTheta;
             this.headSize = dim / numberOfHeads;
         }
+
     }
 
     public static final class Weights {
@@ -2580,6 +2641,18 @@ final class ArrayFloatTensor extends FloatTensor {
 }
 
 final class RoPE {
+	/**
+	 * For GPT2 vocab
+	 * @param contextLength
+	 * @param headSize
+	 * @param theta
+	 * @param ropeScaling
+	 * @param scaleFactor
+	 * @param loFreqFactor
+	 * @param hiFreqFactor
+	 * @param oldContextLength
+	 * @return
+	 */
     public static Pair<float[], float[]> precomputeFreqsCis(int contextLength, int headSize, double theta,
                                                             boolean ropeScaling, float scaleFactor, float loFreqFactor, float hiFreqFactor, float oldContextLength) {
         assert headSize % 2 == 0;
@@ -2612,6 +2685,31 @@ final class RoPE {
         assert contextLength * (headSize / 2) == n;
         return new Pair<>(cr, ci);
     }
+    /**
+     * for Llama vocab
+     * @param contextLength
+     * @param headSize
+     * @param theta
+     * @return
+     */
+    public static Pair<float[], float[]> precomputeFreqsCis(int contextLength, int headSize, double theta) {
+        assert headSize % 2 == 0;
+        float[] cr = new float[contextLength * (headSize / 2)];
+        float[] ci = new float[contextLength * (headSize / 2)];
+        int n = 0;
+        for (int pos = 0; pos < contextLength; ++pos) {
+            for (int i = 0; i < headSize; i += 2) {
+                float freq = (float) (1.0 / Math.pow(theta, i / (double) headSize));
+                float val = pos * freq;
+                cr[n] = (float) Math.cos(val);
+                ci[n] = (float) Math.sin(val);
+                n++;
+            }
+        }
+        assert contextLength * (headSize / 2) == n;
+        return new Pair<>(cr, ci);
+    }
+
 }
 
 record Vocabulary(String[] tokens, float[] scores, Map<String, Integer> tokenToIndex) {
@@ -3009,7 +3107,7 @@ final class AOT {
              var fileChannel = FileChannel.open(modelPath, StandardOpenOption.READ)) {
             // Load only the tensors (mmap slices).
             Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, preLoaded.tensorDataOffset(), preLoaded.tensorInfos());
-            Llama.Weights weights = ModelLoader.loadWeights(tensorEntries, baseModel.configuration());
+            Llama.Weights weights = ModelLoader.loadGPT2Weights(tensorEntries, baseModel.configuration());
             return new Llama(baseModel.configuration().withContextLength(contextLength), baseModel.tokenizer(), weights);
         }
     }
