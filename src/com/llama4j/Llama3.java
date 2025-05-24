@@ -22,7 +22,10 @@ package com.llama4j;
 
 import jdk.incubator.vector.*;
 
+import java.io.Externalizable;
 import java.io.IOException;
+import java.io.ObjectInput;
+import java.io.ObjectOutput;
 import java.io.PrintStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -911,7 +914,7 @@ final class ModelLoader {
             String arch = (String) metadata.get("general.architecture");
             if(TOKENIZER_GPT2_MODEL.equals(model)) {
             	tokenizer = createGPT2Tokenizer(metadata, vocabulary);
-            	config = createGPT2Config(arch, metadata, vocabulary, contextLength);
+            	config = createConfig(arch, metadata, vocabulary, contextLength);
                 if (loadWeights) {
                 	// loadTensors corresponds to getTensorEntries in old version
                     Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
@@ -920,7 +923,7 @@ final class ModelLoader {
             } else {
             	if(TOKENIZER_LLAMA_MODEL.equals(model)) {
             		tokenizer = createLlamaTokenizer(metadata, vocabulary);
-            		config = createLlamaConfig(arch, metadata, vocabulary, contextLength);
+            		config = createConfig(arch, metadata, vocabulary, contextLength);
             		if (loadWeights) {
             			// loadTensors corresponds to getTensorEntries in old version
             			Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
@@ -934,7 +937,7 @@ final class ModelLoader {
         }
     }
     
-    static Llama.Configuration createGPT2Config(String arch, Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
+    static Llama.Configuration createConfig(String arch, Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
         Llama.Configuration config = new Llama.Configuration(
                 (int) metadata.get(arch+".embedding_length"),
                 (int) metadata.get(arch+".feed_forward_length"),
@@ -953,24 +956,7 @@ final class ModelLoader {
         return config;
     }
     
-    static Llama.Configuration createLlamaConfig(String arch, Map<String, Object> metadata, Vocabulary vocabulary, int contextLength) {
-        Llama.Configuration config = new Llama.Configuration(
-                (int) metadata.get(arch+".embedding_length"),
-                (int) metadata.get(arch+".feed_forward_length"),
-                (int) metadata.get(arch+".block_count"),
-                (int) metadata.get(arch+".attention.head_count"),
 
-                metadata.containsKey(arch+".attention.head_count_kv")
-                        ? (int) metadata.get(arch+".attention.head_count_kv")
-                        : (int) metadata.get(arch+".attention.head_count"),
-
-                vocabulary.size(),
-                contextLength,
-                (float) metadata.getOrDefault(arch+".attention.layer_norm_rms_epsilon", 1e-5f),
-                (float) metadata.getOrDefault(arch+".rope.freq_base", 10000f)
-        );
-        return config;
-    }
     /**
      * Called from AOT.tryUsePreloaded and ModelLoader.loadModel
      * @param tensorEntries
@@ -2013,7 +1999,7 @@ enum GGMLType {
  * Not a strict tensor, but rather just a sequence of floats, not required to be backed by memory
  * e.g. can represent a sequence of quantized floats.
  */
-abstract class FloatTensor {
+abstract class FloatTensor implements Externalizable, Comparable {
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
 
@@ -2223,10 +2209,10 @@ abstract class FloatTensor {
  * {@link #dot(int, FloatTensor, int, int)} has a vectorized implementation that is used when
  * the second argument implements {@link FloatTensor}.
  */
-final class Q4_0FloatTensor extends FloatTensor {
+final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
 
     final int size;
-    final MemorySegment memorySegment;
+    final transient MemorySegment memorySegment;
 
     public Q4_0FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
@@ -2337,12 +2323,30 @@ final class Q4_0FloatTensor extends FloatTensor {
 
         return result;
     }
+
+	@Override
+	public void writeExternal(ObjectOutput out) throws IOException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public int compareTo(Object o) {
+		// TODO Auto-generated method stub
+		return 0;
+	}
 }
 
-final class Q8_0FloatTensor extends FloatTensor {
+final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
 
     final int size;
-    final MemorySegment memorySegment;
+    final transient MemorySegment memorySegment;
 
     public Q8_0FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
@@ -2448,12 +2452,30 @@ final class Q8_0FloatTensor extends FloatTensor {
 
         return result;
     }
+
+	@Override
+	public void writeExternal(ObjectOutput out) throws IOException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public int compareTo(Object o) {
+		// TODO Auto-generated method stub
+		return 0;
+	}
 }
 
-final class BF16FloatTensor extends FloatTensor {
+final class BF16FloatTensor extends FloatTensor implements Externalizable, Comparable {
 
     final int size;
-    final MemorySegment memorySegment;
+    final transient MemorySegment memorySegment;
 
     public BF16FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
@@ -2530,12 +2552,30 @@ final class BF16FloatTensor extends FloatTensor {
 
         return result;
     }
+
+	@Override
+	public void writeExternal(ObjectOutput out) throws IOException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public int compareTo(Object o) {
+		// TODO Auto-generated method stub
+		return 0;
+	}
 }
 
-final class F16FloatTensor extends FloatTensor {
+final class F16FloatTensor extends FloatTensor implements Externalizable, Comparable {
 
     final int size;
-    final MemorySegment memorySegment;
+    final transient MemorySegment memorySegment;
 
     public F16FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
@@ -2626,11 +2666,29 @@ final class F16FloatTensor extends FloatTensor {
 
         return result;
     }
+
+	@Override
+	public void writeExternal(ObjectOutput out) throws IOException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public int compareTo(Object o) {
+		// TODO Auto-generated method stub
+		return 0;
+	}
 }
 
-final class F32FloatTensor extends FloatTensor {
+final class F32FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	final int size;
-	final MemorySegment memorySegment;
+	final transient MemorySegment memorySegment;
 	
 	public F32FloatTensor(int size, MemorySegment memorySegment) {
 		this.size = size;
@@ -2662,13 +2720,31 @@ final class F32FloatTensor extends FloatTensor {
 	GGMLType type() {
 		return GGMLType.F32;
 	}
-	
+	@Override
+	public void writeExternal(ObjectOutput out) throws IOException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+		// TODO Auto-generated method stub
+		
+	}
+
+	@Override
+	public int compareTo(Object o) {
+		// TODO Auto-generated method stub
+		return 0;
+	}
 }
 
-final class ArrayFloatTensor extends FloatTensor {
+final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comparable {
 
-    final float[] values;
-
+    float[] values;
+    
+    public ArrayFloatTensor() {}
+    
     ArrayFloatTensor(float[] values) {
         this.values = values;
     }
@@ -2711,6 +2787,26 @@ final class ArrayFloatTensor extends FloatTensor {
         }
         return FloatVector.fromArray(species, values, index);
     }
+    
+	@Override
+	public void writeExternal(ObjectOutput out) throws IOException {
+		out.writeInt(values.length);
+		for(float v: values)
+			out.writeFloat(v);	
+	}
+
+	@Override
+	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+		int vsize = in.readInt();
+		values = new float[vsize];
+		for(int i = 0; i < vsize; i++)
+			values[i]= in.readFloat();
+	}
+
+	@Override
+	public int compareTo(Object o) {
+		return Arrays.compare(values,((ArrayFloatTensor)o).values);
+	}
 }
 
 final class RoPE {
