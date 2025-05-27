@@ -2202,14 +2202,13 @@ abstract class FloatTensor implements Externalizable, Comparable {
     
     float cosineSimilarity(FloatTensor a, FloatTensor b) {
     	float dotProduct = a.dot(0, b, 0, a.size());
-    	float aNorm = 0;
-    	float bNorm = 0;
-    	for (int i = 0; i < a.size(); i++) {
-    	    aNorm += a.getFloat(i) * a.getFloat(i);
-    	    bNorm += b.getFloat(i) * b.getFloat(i);
-    	}
-    	aNorm = (float) Math.sqrt(aNorm);
-    	bNorm = (float) Math.sqrt(bNorm);
+    	final float[] norms = new float[2]; // norms[0] for aNorm, norms[1] for bNorm
+        Parallel.parallelFor(0, a.size(), t -> {
+      	    norms[0] += a.getFloat(t) * a.getFloat(t);
+    	    norms[1] += b.getFloat(t) * b.getFloat(t);
+        });
+    	float aNorm = (float) Math.sqrt(norms[0]);
+    	float bNorm = (float) Math.sqrt(norms[1]);
     	return (dotProduct / (aNorm * bNorm));
     }
 }
