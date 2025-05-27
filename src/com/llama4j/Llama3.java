@@ -614,6 +614,7 @@ final class GGUF {
             GGUFTensorInfo ti = entry.getValue();
             int numberOfElements = FloatTensor.numberOfElements(ti.dimensions());
             int sizeInBytes = Math.toIntExact(ti.ggmlType().byteSizeFor(numberOfElements));
+            System.out.println("Tensor:"+entry.getKey()+"="+ti.name+" offset:"+ti.offset+" dims:"+Arrays.toString(ti.dimensions)+" number elems:"+numberOfElements+" size:"+sizeInBytes);
             MemorySegment memorySegment = tensorData.asSlice(ti.offset(), sizeInBytes);
             tensorEntries.put(ti.name(), new GGMLTensorEntry(tensorData, ti.name(), ti.ggmlType(), ti.dimensions(), memorySegment));
         }
@@ -848,7 +849,6 @@ final class GGUF {
         return alignment;
     }
 }
-
 
 interface Timer extends AutoCloseable {
     @Override
@@ -2199,6 +2199,19 @@ abstract class FloatTensor implements Externalizable, Comparable {
         }
         return this;
     }
+    
+    float cosineSimilarity(FloatTensor a, FloatTensor b) {
+    	float dotProduct = a.dot(0, b, 0, a.size());
+    	float aNorm = 0;
+    	float bNorm = 0;
+    	for (int i = 0; i < a.size(); i++) {
+    	    aNorm += a.getFloat(i) * a.getFloat(i);
+    	    bNorm += b.getFloat(i) * b.getFloat(i);
+    	}
+    	aNorm = (float) Math.sqrt(aNorm);
+    	bNorm = (float) Math.sqrt(bNorm);
+    	return (dotProduct / (aNorm * bNorm));
+    }
 }
 
 
@@ -2210,10 +2223,13 @@ abstract class FloatTensor implements Externalizable, Comparable {
  * the second argument implements {@link FloatTensor}.
  */
 final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
+	private static final long serialVersionUID = -1L;
 
-    final int size;
-    final transient MemorySegment memorySegment;
+	int size;
+    transient MemorySegment memorySegment;
 
+    public Q4_0FloatTensor() {}
+    
     public Q4_0FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
@@ -2326,14 +2342,18 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
 
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
-		// TODO Auto-generated method stub
-		
+		out.writeInt(size);
+		out.writeLong(memorySegment.byteSize());
+		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
 	}
 
 	@Override
 	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		// TODO Auto-generated method stub
-		
+		size = in.readInt();
+		long bs = in.readLong();
+		memorySegment = Arena.ofAuto().allocate(bs, 1);
+		for(int i = 0; i < bs; i++)
+			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
 	}
 
 	@Override
@@ -2344,10 +2364,13 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
 }
 
 final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
+	private static final long serialVersionUID = -1L;
 
-    final int size;
-    final transient MemorySegment memorySegment;
+	int size;
+    transient MemorySegment memorySegment;
 
+    public Q8_0FloatTensor() {}
+    
     public Q8_0FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
@@ -2455,14 +2478,18 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
 
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
-		// TODO Auto-generated method stub
-		
+		out.writeInt(size);
+		out.writeLong(memorySegment.byteSize());
+		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
 	}
 
 	@Override
 	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		// TODO Auto-generated method stub
-		
+		size = in.readInt();
+		long bs = in.readLong();
+		memorySegment = Arena.ofAuto().allocate(bs, 1);
+		for(int i = 0; i < bs; i++)
+			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
 	}
 
 	@Override
@@ -2473,10 +2500,13 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
 }
 
 final class BF16FloatTensor extends FloatTensor implements Externalizable, Comparable {
+	private static final long serialVersionUID = -1L;
 
-    final int size;
-    final transient MemorySegment memorySegment;
-
+    int size;
+    transient MemorySegment memorySegment;
+    
+    public BF16FloatTensor() {}
+    
     public BF16FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
@@ -2555,14 +2585,18 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
 
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
-		// TODO Auto-generated method stub
-		
+		out.writeInt(size);
+		out.writeLong(memorySegment.byteSize());
+		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
 	}
 
 	@Override
 	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		// TODO Auto-generated method stub
-		
+		size = in.readInt();
+		long bs = in.readLong();
+		memorySegment = Arena.ofAuto().allocate(bs, 1);
+		for(int i = 0; i < bs; i++)
+			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
 	}
 
 	@Override
@@ -2573,10 +2607,13 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
 }
 
 final class F16FloatTensor extends FloatTensor implements Externalizable, Comparable {
+	private static final long serialVersionUID = -1L;
 
-    final int size;
-    final transient MemorySegment memorySegment;
+    int size;
+    transient MemorySegment memorySegment;
 
+    public F16FloatTensor() {}
+    
     public F16FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
@@ -2669,14 +2706,18 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
-		// TODO Auto-generated method stub
-		
+		out.writeInt(size);
+		out.writeLong(memorySegment.byteSize());
+		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
 	}
 
 	@Override
 	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		// TODO Auto-generated method stub
-		
+		size = in.readInt();
+		long bs = in.readLong();
+		memorySegment = Arena.ofAuto().allocate(bs, 1);
+		for(int i = 0; i < bs; i++)
+			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
 	}
 
 	@Override
@@ -2687,8 +2728,12 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 }
 
 final class F32FloatTensor extends FloatTensor implements Externalizable, Comparable {
-	final int size;
-	final transient MemorySegment memorySegment;
+	private static final long serialVersionUID = -1L;
+
+	int size;
+	transient MemorySegment memorySegment;
+	
+	public F32FloatTensor() {}
 	
 	public F32FloatTensor(int size, MemorySegment memorySegment) {
 		this.size = size;
@@ -2720,16 +2765,21 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	GGMLType type() {
 		return GGMLType.F32;
 	}
+
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
-		// TODO Auto-generated method stub
-		
+		out.writeInt(size);
+		out.writeLong(memorySegment.byteSize());
+		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
 	}
 
 	@Override
 	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		// TODO Auto-generated method stub
-		
+		size = in.readInt();
+		long bs = in.readLong();
+		memorySegment = Arena.ofAuto().allocate(bs, 1);
+		for(int i = 0; i < bs; i++)
+			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
 	}
 
 	@Override
