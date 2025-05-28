@@ -49,6 +49,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.DoubleAdder;
 import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
 import java.util.function.LongConsumer;
@@ -2202,13 +2203,14 @@ abstract class FloatTensor implements Externalizable, Comparable {
     
     float cosineSimilarity(FloatTensor a, FloatTensor b) {
     	float dotProduct = a.dot(0, b, 0, a.size());
-    	final float[] norms = new float[2]; // norms[0] for aNorm, norms[1] for bNorm
-        Parallel.parallelFor(0, a.size(), t -> {
-      	    norms[0] += a.getFloat(t) * a.getFloat(t);
-    	    norms[1] += b.getFloat(t) * b.getFloat(t);
-        });
-    	float aNorm = (float) Math.sqrt(norms[0]);
-    	float bNorm = (float) Math.sqrt(norms[1]);
+    	DoubleAdder aNormAdder = new DoubleAdder();
+    	DoubleAdder bNormAdder = new DoubleAdder();
+    	Parallel.parallelFor(0, a.size(), t -> {
+    	    aNormAdder.add(a.getFloat(t) * a.getFloat(t));
+    	    bNormAdder.add(b.getFloat(t) * b.getFloat(t));
+    	});
+    	float aNorm = (float) Math.sqrt(aNormAdder.sum());
+    	float bNorm = (float) Math.sqrt(bNormAdder.sum());
     	return (dotProduct / (aNorm * bNorm));
     }
 }
@@ -3374,15 +3376,14 @@ final class AOT {
  *
  * Supported input types:
  * - double[]
- * - others to come...
- *
- * @author Thibault Debatty
+ * @author original:Thibault Debatty
+ * @author Groff
  */
 final class SuperBit implements java.io.Serializable, Comparable {
 	private static final long serialVersionUID = -1L;
-    private double[][] hyperplanes;
+	private boolean[] sig;
+    private transient double[][] hyperplanes;
     private static final int DEFAULT_CODE_LENGTH = 10000;
-
     /**
      * Initialize SuperBit algorithm.
      * Super-Bit depth n must be [1 .. d] and number of Super-Bit l in [1 ..
@@ -3464,18 +3465,16 @@ final class SuperBit implements java.io.Serializable, Comparable {
         }
         this.hyperplanes = w;
     }
-
     /**
      * Initialize SuperBit algorithm.
      * With code length K = 10000
      * The K vectors are orthogonalized in d batches of 10000/d vectors
      * The resulting mean error is 0.01
-     * @param d
+     * @param d The size of the vector we are operating on
      */
     public SuperBit(final int d) {
-        this(d, d, DEFAULT_CODE_LENGTH / d);
+        this(d, d, DEFAULT_CODE_LENGTH / d, 8675309);
     }
-
     /**
      * Initialize SuperBit algorithm without parameters
      * (used only for serialization).
@@ -3496,20 +3495,19 @@ final class SuperBit implements java.io.Serializable, Comparable {
     /**
      * Compute the similarity between two signature, which is also an
      * estimation of the cosine similarity between the two vectors.
-     *
      * @param sig1
      * @param sig2
      * @return estimated cosine similarity
      */
     public final double similarity(final boolean[] sig1, final boolean[] sig2) {
-        final double[] agg = new double[] {0};
+        DoubleAdder agg = new DoubleAdder(); // Thread-safe accumulator
         Parallel.parallelFor(0, sig1.length, t -> {
             if (sig1[t] == sig2[t]) {
-                agg[0]++;
+                agg.add(1); // Efficient atomic addition
             }
-        }); 
-        agg[0] = agg[0] / sig1.length;
-        return Math.cos((1 - agg[0]) * Math.PI);
+        });
+        double sim = agg.sum() / sig1.length; // Use .sum() instead of .get()
+        return Math.cos((1 - sim) * Math.PI);
     }
 
     /**
@@ -3546,10 +3544,8 @@ final class SuperBit implements java.io.Serializable, Comparable {
         return r;
     }
     private static void normalize(final double[] vector) {
-        double norm = norm(vector);
-        Parallel.parallelFor(0, vector.length, t -> {
-        	vector[t] = vector[t] / norm;
-        });
+        final double norm = norm(vector);
+        Parallel.parallelFor(0, vector.length, t -> vector[t] /= norm);
     }
     /**
      * Returns the norm L2. sqrt(sum_i(v_i^2))
@@ -3557,22 +3553,21 @@ final class SuperBit implements java.io.Serializable, Comparable {
      * @return
      */
     private static double norm(final double[] v) {
-        final double[] agg = new double[] {0};
-        Parallel.parallelFor(0, v.length, t -> {
-        	agg[0] += (v[t] * v[t]);
-        });
-        return Math.sqrt(agg[0]);
+        DoubleAdder agg = new DoubleAdder();
+        Parallel.parallelFor(0, v.length, t -> agg.add(v[t] * v[t]));
+        return Math.sqrt(agg.sum());
     }
     private static double dotProduct(final double[] v1, final double[] v2) {
-        final double[] agg = new double[] {0};
-        Parallel.parallelFor(0, v1.length, t -> {
-        	agg[0] += (v1[t] * v2[t]);
-        });
-        return agg[0];
-    }
-    
+        if (v1.length < 10_000) { // Adjust threshold based on benchmarking
+            return IntStream.range(0, v1.length).mapToDouble(t -> v1[t] * v2[t]).sum();
+        } else {
+            DoubleAdder agg = new DoubleAdder();
+            Parallel.parallelFor(0, v1.length, t -> agg.add(v1[t] * v2[t]));
+            return agg.sum();
+        }
+    } 
 	@Override
 	public int compareTo(Object o) {
-		return 0;
+		return Double.compare(similarity(this.sig, ((SuperBit)o).sig), 1.0); // Ensures proper ordering
 	}
 }
