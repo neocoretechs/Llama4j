@@ -3493,6 +3493,19 @@ final class SuperBit implements java.io.Serializable, Comparable {
         return sig;
     }
     /**
+     * Compute the signature of the given FloatTensor, set the encapsulated signature for serialization
+     * @param vector The target FloatTensor
+     */
+    public final void signature(final FloatTensor vector) {
+        sig = new boolean[this.hyperplanes.length];
+        for (int i = 0; i < this.hyperplanes.length; i++) {
+            sig[i] = (dotProduct(this.hyperplanes[i], vector) >= 0);
+        }
+    }
+    public final boolean[] getSignature() {
+    	return sig;
+    }
+    /**
      * Compute the similarity between two signature, which is also an
      * estimation of the cosine similarity between the two vectors.
      * @param sig1
@@ -3563,6 +3576,15 @@ final class SuperBit implements java.io.Serializable, Comparable {
         } else {
             DoubleAdder agg = new DoubleAdder();
             Parallel.parallelFor(0, v1.length, t -> agg.add(v1[t] * v2[t]));
+            return agg.sum();
+        }
+    }
+    private static double dotProduct(final double[] v1, final FloatTensor v2) {
+        if (v1.length < 10_000) { // Adjust threshold based on benchmarking
+            return IntStream.range(0, v1.length).mapToDouble(t -> v1[t] * v2.getFloat(t)).sum();
+        } else {
+            DoubleAdder agg = new DoubleAdder();
+            Parallel.parallelFor(0, v1.length, t -> agg.add(v1[t] * v2.getFloat(t)));
             return agg.sum();
         }
     } 
