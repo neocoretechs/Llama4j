@@ -70,13 +70,15 @@ import org.jsoup.select.Elements;
 import com.neocoretechs.relatrix.client.asynch.AsynchRelatrixClientTransaction;
 import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
+import com.neocoretechs.rocksack.Alias;
 
 public class Llama3 {
     // Batch-size used in prompt evaluation.
     private static final int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
     private final static boolean DEBUG = false;
-    private static AsynchRelatrixClientTransaction dbClient = null;
-    private static TransactionId xid = null;
+    public static AsynchRelatrixClientTransaction dbClient = null;
+    public static TransactionId xid = null;
+    public static Alias tensorAlias = null;
 
     static Sampler selectSampler(int vocabularySize, float temperature, float topp, long rngSeed) {
         Sampler sampler;
@@ -126,6 +128,11 @@ public class Llama3 {
         	try {
         		dbClient = new AsynchRelatrixClientTransaction(options.localNode(), options.remoteNode(), options.remotePort());
         		xid = dbClient.getTransactionId();
+        		tensorAlias = new Alias("Tensors");
+        		try {
+        			if(dbClient.getAlias(tensorAlias).get() == null)
+        				dbClient.setRelativeAlias(tensorAlias);
+        		} catch(ExecutionException | InterruptedException ie) {}
         		if(DEBUG)
         			System.out.println("Relatrix transaction Id:"+xid);
         	} catch(IOException ioe) {
@@ -523,7 +530,7 @@ final class GGUF {
 
     public static GGUF loadModel(Path modelPath) throws IOException {
         try (FileChannel fileChannel = FileChannel.open(modelPath);
-             var ignored = Timer.log("Parse " + modelPath)) {
+            var ignored = Timer.log("Parse " + modelPath)) {
             GGUF gguf = new GGUF();
             gguf.loadModelImpl(fileChannel);
             return gguf;
@@ -1388,7 +1395,20 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         Parallel.parallelFor(0, nTokens, t -> {
             rmsnorm(state.x[t], state.x[t], weights.rms_final_weight, dim, config.rmsNormEps);
         });
-
+        
+        if(computeLogits) {
+        	SuperBit sb = null;
+        	try (Timer timer = Timer.log("SuperBits:"+state.x[nTokens-1].size())) {
+        		sb =  new SuperBit(state.x[nTokens-1].size());
+        	}
+        	try (Timer timer = Timer.log("Signature")) {
+        		sb.signature(state.x[nTokens-1]);
+        	}
+        	try (Timer timer = Timer.log("Store Tensor:"+sb.getSignature().length)) {
+        		Llama3.dbClient.storekv(Llama3.tensorAlias, Llama3.xid, sb, state.x[nTokens-1]);
+        	}
+        }
+        
         // classifier into logits
         weights.wcls.matmul(state.x[nTokens - 1], state.logits, config.vocabularySize, dim);
         state.idxPrevBlock = nTokens - 1;
@@ -3432,15 +3452,14 @@ final class SuperBit implements java.io.Serializable, Comparable {
         // Denote H = [v1, v2, ..., vK].
         int code_length = n * l;
         double[][] v = new double[code_length][d];
-
-        for (int i = 0; i < code_length; i++) {
+        Parallel.parallelFor(0, code_length, t -> {
             double[] vector = new double[d];
             for (int j = 0; j < d; j++) {
                 vector[j] = rand.nextGaussian();
             }
             normalize(vector);
-            v[i] = vector;
-        }
+            v[t] = vector;
+        });
         double[][] w = new double[code_length][d];
         for (int i = 0; i <= l - 1; i++) {
             for (int j = 1; j <= n; j++) {
