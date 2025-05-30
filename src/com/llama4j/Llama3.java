@@ -199,9 +199,16 @@ public class Llama3 {
             Set<Integer> stopTokens = chatFormat.getStopTokens();
             List<Integer> responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
                 if (options.stream()) {
-                    if (!model.tokenizer().isSpecialToken(token)) {
-                        System.out.print(model.tokenizer().decode(List.of(token)));
-                    }
+                	if(ModelLoader.name.equals("qwen")) {
+                		int tokenType = model.tokenizer().getTokenType(token);
+                		if (tokenType == 1 || tokenType == 6) {
+                			System.out.print(model.tokenizer().decode(List.of(token)));
+                		}
+                	} else {
+                		if (!model.tokenizer().isSpecialToken(token)) {
+                			System.out.print(model.tokenizer().decode(List.of(token)));
+                		}
+                	}
                 }
             });
             // Include stop token in the prompt history, but not in the response displayed to the user.
@@ -940,27 +947,38 @@ final class ModelLoader {
             Llama.Configuration config;
             Llama.Weights weights = null;
             String arch = (String) metadata.get("general.architecture");
-            if(TOKENIZER_GPT2_MODEL.equals(model)) {
-            	tokenizer = createGPT2Tokenizer(metadata, vocabulary);
-            	config = createConfig(arch, metadata, vocabulary, contextLength);
-                if (loadWeights) {
-                	// loadTensors corresponds to getTensorEntries in old version
-                    Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
-                    weights = loadGPT2Weights(tensorEntries, config);
-                }
+            if(ModelLoader.name.equals("mistral")) {
+           		tokenizer = createLlamaTokenizer(metadata, vocabulary);
+        		config = createConfig(arch, metadata, vocabulary, contextLength);
+        		if (loadWeights) {
+        			// loadTensors corresponds to getTensorEntries in old version
+        			Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
+        			weights = loadLlamaWeights(tensorEntries, config);
+        		}
             } else {
-            	if(TOKENIZER_LLAMA_MODEL.equals(model)) {
-            		tokenizer = createLlamaTokenizer(metadata, vocabulary);
-            		config = createConfig(arch, metadata, vocabulary, contextLength);
-            		if (loadWeights) {
-            			// loadTensors corresponds to getTensorEntries in old version
-            			Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
-            			weights = loadLlamaWeights(tensorEntries, config);
-            		}
+            	if(ModelLoader.name.equals("llama")) {
+                   	tokenizer = createGPT2Tokenizer(metadata, vocabulary);
+                	config = createConfig(arch, metadata, vocabulary, contextLength);
+                    if (loadWeights) {
+                    	// loadTensors corresponds to getTensorEntries in old version
+                        Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
+                        weights = loadGPT2Weights(tensorEntries, config);
+                    }
             	} else {
-            		throw new IllegalArgumentException("expected " + TOKENIZER_GPT2_MODEL + " or "+ TOKENIZER_LLAMA_MODEL+ " but found " + model);
+            		if(ModelLoader.name.equals("qwen")) {
+                      	tokenizer = createQwen2Tokenizer(metadata, vocabulary);
+                    	config = createConfig(arch, metadata, vocabulary, contextLength);
+                        if (loadWeights) {
+                        	// loadTensors corresponds to getTensorEntries in old version
+                            Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
+                            weights = loadGPT2Weights(tensorEntries, config);
+                        }
+            		} else {
+            			throw new IllegalArgumentException("expected metadata general.name containing mistral, llama, or qwen but found "+ModelLoader.name);
+            		}
             	}
             }
+  
             return new Llama(config, tokenizer, weights);
         }
     }
@@ -1048,6 +1066,64 @@ final class ModelLoader {
            return qw;
     }
     
+    static Llama.Weights loadQwenWeights(Map<String, GGMLTensorEntry> tensorEntries, Llama.Configuration config) {
+   	   Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLength, config.headSize, config.ropeTheta);
+       float[] ropeFreqsReal = ropeFreqs.first();
+       float[] ropeFreqsImag = ropeFreqs.second();
+
+    	Llama.Weights qw = new Llama.Weights(
+    			loadQuantized(tensorEntries.get("token_embd.weight")),
+    			loadArrayOfFloatBuffer(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")),
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_q.weight")),
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_q.bias")),
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k.bias")),
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_v.bias")),
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
+    			loadArrayOfFloatBuffer(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")), // w1
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_down.weight")), // w2
+    			loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_up.weight")), // w3
+    			toFloatBuffer(tensorEntries.get("output_norm.weight")),
+    			FloatBuffer.wrap(ropeFreqsReal),
+    			FloatBuffer.wrap(ropeFreqsImag),
+    			loadQuantized(tensorEntries.get("output.weight"))
+    			);
+    	return qw;
+    }
+
+    private final static String QWEN2_PATTERN = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+
+    private static Tokenizer createQwen2Tokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
+        int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
+        String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
+        List<Pair<Integer, Integer>> merges = Arrays.stream(mergeLines)
+                .map(line -> line.split(" "))
+                .map(parts ->
+                        new Pair<>(
+                                vocabulary.getIndex(parts[0]).orElseThrow(),
+                                vocabulary.getIndex(parts[1]).orElseThrow())
+                ).toList();
+
+        int allTokens = vocabulary.size();
+        int baseTokens = vocabulary.getIndex("<|endoftext|>").orElseThrow(); // assume all tokens after the base ones are special.
+        int reservedSpecialTokens = allTokens - baseTokens;
+        List<String> specialTokensList = Arrays.stream(vocabulary.tokens(), baseTokens, allTokens).toList();
+
+        assert specialTokensList.stream().allMatch(token -> vocabulary.getIndex(token).isPresent());
+
+        Map<String, Integer> specialTokens =
+                IntStream.range(0, specialTokensList.size())
+                        .boxed()
+                        .collect(Collectors.toMap(
+                                i -> specialTokensList.get(i),
+                                i -> baseTokens + i)
+                        );
+
+        return new Tokenizer(vocabulary, merges, QWEN2_PATTERN, specialTokens, tokenTypes);
+    }
+
     private static Tokenizer createGPT2Tokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
         String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
         List<Pair<Integer, Integer>> merges = Arrays.stream(mergeLines)
@@ -1177,6 +1253,12 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         public final FloatTensor[] wk; // (layer, n_kv_heads, head_size)
         public final FloatTensor[] wv; // (layer, n_kv_heads * head_size)
         public final FloatTensor[] wo; // (layer, n_heads * head_size, dim)
+        
+        // next 3: qwen - Groff from Qwen2.java
+        public FloatTensor[] q_bias = null; // (layer, dim)
+        public FloatTensor[] k_bias = null; // (layer, kv_dim)
+        public FloatTensor[] v_bias = null; // (layer, kv_dim)
+        
         public final FloatBuffer[] rms_ffn_weight; // (layer, dim)
         // weights for ffn
         public final FloatTensor[] w1; // (layer, hidden_dim, dim)
@@ -1205,6 +1287,26 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             this.freq_cis_real = freq_cis_real;
             this.freq_cis_imag = freq_cis_imag;
             this.wcls = wcls;
+        }
+
+        public Weights(FloatTensor token_embedding_table, FloatBuffer[] rms_att_weight, FloatTensor[] wq, FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] wo, FloatTensor[] q, FloatTensor[] k, FloatTensor[] v, FloatBuffer[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, FloatTensor[] w3, FloatBuffer rms_final_weight, FloatBuffer freq_cis_real, FloatBuffer freq_cis_imag, FloatTensor wcls) {
+        	this.token_embedding_table = token_embedding_table;
+        	this.rms_att_weight = rms_att_weight;
+        	this.wq = wq;
+        	this.wk = wk;
+        	this.wv = wv;
+        	this.wo = wo;
+        	this.q_bias = q;
+        	this.k_bias = k;
+        	this.v_bias = v;
+        	this.rms_ffn_weight = rms_ffn_weight;
+        	this.w1 = w1;
+        	this.w2 = w2;
+        	this.w3 = w3;
+        	this.rms_final_weight = rms_final_weight;
+        	this.freq_cis_real = freq_cis_real;
+        	this.freq_cis_imag = freq_cis_imag;
+        	this.wcls = wcls;
         }
     }
 
@@ -1525,6 +1627,7 @@ interface TokenizerInterface {
 	 public boolean isSpecialToken(int tokenIndex);
 	 public String decode(List<Integer> tokens);
 	 public List<Integer> encodeAsList(String text);
+	 public int getTokenType(int tokenIndex);
 }
 /**
  * Byte Pair Encoding tokenizer.
@@ -1537,6 +1640,7 @@ class Tokenizer implements TokenizerInterface {
     private final Vocabulary vocabulary;
     private final Map<Pair<Integer, Integer>, Integer> merges;
     private final Map<String, Integer> specialTokens;
+    private int[] tokenTypes; // qwen2
 
     public String regexPattern() {
         if (compiledPattern == null) {
@@ -1544,15 +1648,19 @@ class Tokenizer implements TokenizerInterface {
         }
         return compiledPattern.pattern();
     }
-
+    @Override
     public Map<String, Integer> getSpecialTokens() {
         return specialTokens;
     }
-
+    @Override
     public boolean isSpecialToken(int tokenIndex) {
         return specialTokens.containsValue(tokenIndex);
     }
-
+    @Override
+    public int getTokenType(int tokenIndex) {
+        return tokenTypes[tokenIndex];
+    }
+    
     public Tokenizer(Vocabulary vocabulary, List<Pair<Integer, Integer>> merges, String regexPattern, Map<String, Integer> specialTokens) {
         this.vocabulary = vocabulary;
         this.compiledPattern = regexPattern != null ? Pattern.compile(regexPattern) : null;
@@ -1566,6 +1674,11 @@ class Tokenizer implements TokenizerInterface {
         }
     }
 
+    public Tokenizer(Vocabulary vocabulary, List<Pair<Integer, Integer>> merges, String regexPattern, Map<String, Integer> specialTokens, int[] tokenTypes) {
+    	this(vocabulary, merges, regexPattern, specialTokens);
+    	this.tokenTypes = tokenTypes;
+    }
+    
     private int[] encodeImpl(String text) {
         return encode(text, Set.of()).stream().mapToInt(i -> i).toArray();
     }
@@ -1761,11 +1874,11 @@ class Tokenizer implements TokenizerInterface {
     public static String replaceControlCharacters(String str) {
         return replaceControlCharacters(str.codePoints().toArray());
     }
-
+    @Override
     public List<Integer> encodeAsList(String text) {
         return Arrays.stream(encode(text)).boxed().toList();
     }
-
+    @Override
     public String decode(List<Integer> tokens) {
         String decoded = decodeImpl(tokens);
         int[] decodedBytesAsInts = decoded.codePoints().map(BYTE_DECODER::get).toArray();
@@ -1778,10 +1891,8 @@ class Tokenizer implements TokenizerInterface {
 }
 
 /**
- * Byte Pair Encoding tokenizer.
- * <p>
- * Based on <a href="https://github.com/karpathy/minbpe">minbpe</a>, algorithmically follows along the
- * <a href="https://github.com/openai/gpt-2/blob/master/src/encoder.py">GPT 2 tokenizer</a>
+ * Wherein Llama models metadata.get("tokenizer.ggml.model") = gpt2
+ * and Mistral uses metadata.get("tokenizer.ggml.model") = llama.
  */
 class MistralTokenizer implements TokenizerInterface {
     private final Pattern compiledPattern;
@@ -1796,15 +1907,15 @@ class MistralTokenizer implements TokenizerInterface {
         }
         return compiledPattern.pattern();
     }
-
+    @Override
     public Map<String, Integer> getSpecialTokens() {
         return specialTokens;
     }
-
+    @Override
     public boolean isSpecialToken(int tokenIndex) {
         return getTokenType(tokenIndex) != 1;
     }
-
+    @Override
     public int getTokenType(int tokenIndex) {
         return tokenType[tokenIndex];
     }
@@ -1875,7 +1986,7 @@ class MistralTokenizer implements TokenizerInterface {
 
         return tokens;
     }
-
+    @Override
     public String decode(List<Integer> tokens) {
         StringBuilder sb = new StringBuilder();
         for (int token : tokens) {
