@@ -74,7 +74,7 @@ import com.neocoretechs.rocksack.Alias;
 
 public class Llama3 {
     // Batch-size used in prompt evaluation.
-    private static final int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
+    private static int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
     private final static boolean DEBUG = false;
     public static AsynchRelatrixClientTransaction dbClient = null;
     public static TransactionId xid = null;
@@ -119,6 +119,7 @@ public class Llama3 {
         		chatFormat = new ChatFormat(model.tokenizer());
         	} else {
         		if(ModelLoader.name.equals("qwen")) {
+        			BATCH_SIZE = 1;
         			chatFormat = new ChatMLFormat(model.tokenizer());
         		} else {
         			throw new IllegalArgumentException("expected metadata general.name containing mistral, llama, or qwen but found "+ModelLoader.name);
@@ -197,20 +198,25 @@ public class Llama3 {
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
             conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
             Set<Integer> stopTokens = chatFormat.getStopTokens();
-            List<Integer> responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
-                if (options.stream()) {
-                	if(ModelLoader.name.equals("qwen")) {
-                		int tokenType = model.tokenizer().getTokenType(token);
-                		if (tokenType == 1 || tokenType == 6) {
-                			System.out.print(model.tokenizer().decode(List.of(token)));
-                		}
-                	} else {
-                		if (!model.tokenizer().isSpecialToken(token)) {
-                			System.out.print(model.tokenizer().decode(List.of(token)));
-                		}
-                	}
-                }
-            });
+            List<Integer> responseTokens;
+            if(ModelLoader.name.equals("qwen")) {
+            	responseTokens = Llama.generateTokensQwen(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+            		if (options.stream()) {
+            			int tokenType = model.tokenizer().getTokenType(token);
+            			if (tokenType == 1 || tokenType == 6) {
+            				System.out.print(model.tokenizer().decode(List.of(token)));
+            			}
+            		}
+            	});
+            } else {
+            	responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+            		if (options.stream()) {
+            			if (!model.tokenizer().isSpecialToken(token)) {
+            				System.out.print(model.tokenizer().decode(List.of(token)));
+            			}
+            		}
+            	});
+            }
             // Include stop token in the prompt history, but not in the response displayed to the user.
             conversationTokens.addAll(responseTokens);
             startPosition = conversationTokens.size();
@@ -971,7 +977,7 @@ final class ModelLoader {
                         if (loadWeights) {
                         	// loadTensors corresponds to getTensorEntries in old version
                             Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
-                            weights = loadGPT2Weights(tensorEntries, config);
+                            weights = loadQwenWeights(tensorEntries, config);
                         }
             		} else {
             			throw new IllegalArgumentException("expected metadata general.name containing mistral, llama, or qwen but found "+ModelLoader.name);
@@ -1240,7 +1246,6 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             this.ropeTheta = ropeTheta;
             this.headSize = dim / numberOfHeads;
         }
-
     }
 
     public static final class Weights {
@@ -1538,6 +1543,129 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
 
         return state.logits;
     }
+    
+    static FloatTensor forwardQwen(Llama model, State state, int token, int position) {
+    	// a few convenience variables
+    	Llama.Configuration config = model.configuration();
+    	Llama.Weights weights = model.weights();
+    	int dim = config.dim;
+    	int headSize = config.headSize;
+    	int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
+    	int kvMul = config.numberOfHeads / config.numberOfKeyValueHeads; // integer multiplier of the kv sharing in multiquery
+    	float sqrtHeadSize = (float) Math.sqrt(headSize);
+
+    	// copy the token embedding into x
+    	weights.token_embedding_table.copyTo(token * dim, state.x[0], 0, dim);
+
+    	// forward all the layers
+    	for (int l = 0; l < config.numberOfLayers; l++) {
+    		// attention rmsnorm
+    		rmsnorm(state.xb[0], state.x[0], weights.rms_att_weight[l], dim, config.rmsNormEps);
+    		// qkv matmuls for this position
+    		weights.wq[l].matmul(state.xb[0], state.q[0], dim, dim);
+    		if (weights.q_bias != null && weights.q_bias[l] != null) {
+    			//state.q[0].addInPlace(weights.q_bias[l]);
+    			System.out.println("state:"+state.q[0].size());
+    			state.q[0].verify();
+    			System.out.println("weights:"+weights.q_bias[l].size());
+    			weights.q_bias[l].verify();
+       			state.q[0].addInPlace(weights.q_bias[l]);
+    		}
+    		weights.wk[l].matmul(state.xb[0], state.k[0], kvDim, dim);
+    		if (weights.k_bias != null && weights.k_bias[l] != null) {
+    			state.k[0].addInPlace(weights.k_bias[l]);
+    		}
+    		weights.wv[l].matmul(state.xb[0], state.v[0], kvDim, dim);
+    		if (weights.v_bias != null && weights.v_bias[l] != null) {
+    			state.v[0].addInPlace(weights.v_bias[l]);
+    		}
+    		// RoPE relative positional encoding: complex-valued rotate q and k in each head
+    		// GPT-NeoX style RoPE, real/imaginary components are stored with a headSize/2 offset per head, instead of consecutive.
+    		for (int h = 0; h < config.numberOfHeads; ++h) {
+    			int rotn = h < config.numberOfKeyValueHeads ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
+    			int poffset = h * headSize;
+    			for (int i0 = 0; i0 < headSize; i0 += 2) {
+    				int ic = i0 / 2;
+    				float fcr = weights.freq_cis_real.get(position * (headSize / 2) + ic);
+    				float fci = weights.freq_cis_imag.get(position * (headSize / 2) + ic);
+    				for (int v = 0; v < rotn; v++) {
+    					FloatTensor vec = v == 0 ? state.q[0] : state.k[0]; // the vector to rotate (query or key)
+    					float v0 = vec.getFloat(poffset + ic);
+    					float v1 = vec.getFloat(poffset + ic + headSize/2);
+    					vec.setFloat(poffset + ic, v0 * fcr - v1 * fci);
+    					vec.setFloat(poffset + ic + headSize/2, v0 * fci + v1 * fcr);
+    				}
+    			}
+    		}
+    		// save key,value at this time step (position) to our kv cache
+    		//int loff = l * config.seq_len * kvDim; // kv cache layer offset for convenience
+    		state.k[0].copyTo(0, state.keyCache[l], position * kvDim, kvDim);
+    		state.v[0].copyTo(0, state.valueCache[l], position * kvDim, kvDim);
+    		int curLayer = l;
+    		// multihead attention. iterate over all heads
+    		Parallel.parallelFor(0, config.numberOfHeads, h -> {
+    			// get the query vector for this head
+    			// float* q = s.q + h * headSize;
+    			int qOffset = h * headSize;
+    			// attention scores for this head
+    			// float* att = s.att + h * config.seq_len;
+    			int attOffset = h * config.contextLength;
+    			// iterate over all timesteps, including the current one
+    			for (int t = 0; t <= position; t++) {
+    				// get the key vector for this head and at this timestep
+    				// float* k = s.key_cache + loff + t * dim + h * headSize;
+    				int keyCacheOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
+    				// calculate the attention score as the dot product of q and k
+    				float score = state.q[0].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+    				score /= sqrtHeadSize;
+    				// save the score to the attention buffer
+    				state.att[0].setFloat(attOffset + t, score);
+    			}
+    			// softmax the scores to get attention weights, from 0..position inclusively
+    			state.att[0].softmaxInPlace(attOffset, position + 1);
+    			// weighted sum of the values, store back into xb
+    			// float* xb = s.xb + h * headSize;
+    			int xbOffset = h * headSize;
+    			// memset(xb, 0, headSize * sizeof(float));
+    			state.xb[0].fillInPlace(xbOffset, headSize, 0f);
+    			for (int t = 0; t <= position; t++) {
+    				// get the value vector for this head and at this timestep
+    				// float* v = s.value_cache + loff + t * dim + h * headSize;
+    				int vOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
+    				// get the attention weight for this timestep
+    				float a = state.att[0].getFloat(attOffset + t);
+    				// accumulate the weighted value into xb
+    				state.xb[0].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
+    			}
+    		});
+
+    		// final matmul to get the output of the attention
+    		weights.wo[l].matmul(state.xb[0], state.xb2[0], dim, dim);
+    		// residual connection back into x
+    		state.x[0].addInPlace(state.xb2[0]);
+    		// ffn rmsnorm
+    		rmsnorm(state.xb[0], state.x[0], weights.rms_ffn_weight[l], dim, config.rmsNormEps);
+    		// Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
+    		// first calculate self.w1(x) and self.w3(x)
+    		weights.w1[l].matmul(state.xb[0], state.hb[0], config.hiddenDim, dim);
+    		weights.w3[l].matmul(state.xb[0], state.hb2[0], config.hiddenDim, dim);
+    		// SwiGLU non-linearity
+    		// silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
+    		state.hb[0].mapInPlace(value -> value / (float) (1.0 + Math.exp(-value)));
+    		// elementwise multiply with w3(x)
+    		state.hb[0].multiplyInPlace(state.hb2[0]);
+    		// final matmul to get the output of the ffn
+    		weights.w2[l].matmul(state.hb[0], state.xb[0], dim, config.hiddenDim);
+    		// residual connection
+    		state.x[0].addInPlace(state.xb[0]);
+    	}
+
+    	// final rmsnorm
+    	rmsnorm(state.x[0], state.x[0], weights.rms_final_weight, dim, config.rmsNormEps);
+    	// classifier into logits
+    	weights.wcls.matmul(state.x[0], state.logits, config.vocabularySize, dim);
+    	return state.logits;
+    }
 
     /**
      * LLM generation entry point, ingest prompt tokens and generates new tokens.
@@ -1617,6 +1745,62 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 startPosition + promptIndex + generatedTokens.size(), model.configuration().contextLength,
                 promptTokens.size() / (promptNanos / 1_000_000_000.0), promptTokens.size(),
                 generatedTokens.size() / (genNanos / 1_000_000_000.0), generatedTokens.size());
+
+        return generatedTokens;
+    }
+
+    /**
+     * Qwen specific calls forwardQwen.
+     * @param model
+     * @param state
+     * @param startPosition
+     * @param promptTokens
+     * @param stopTokens
+     * @param maxTokens
+     * @param sampler
+     * @param echo
+     * @param onTokenGenerated
+     * @return
+     */
+    public static List<Integer> generateTokensQwen(Llama model, State state, int startPosition, List<Integer> promptTokens, Set<Integer> stopTokens, int maxTokens, Sampler sampler, boolean echo,
+    		IntConsumer onTokenGenerated) {
+        long startNanos = System.nanoTime();
+        if (maxTokens < 0 || model.configuration().contextLength < maxTokens) {
+            maxTokens = model.configuration().contextLength;
+        }
+        List<Integer> generatedTokens = new ArrayList<>(maxTokens);
+        int token = state.latestToken; // BOS?
+        int nextToken;
+        int promptIndex = 0;
+        for (int position = startPosition; position < maxTokens; ++position) {
+            forwardQwen(model, state, token, position);
+            if (promptIndex < promptTokens.size()) {
+                // Force-pick token from prompt.
+                nextToken = promptTokens.get(promptIndex++);
+                if (echo) {
+                    // log prompt token (different color?)
+                    System.err.print(Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(nextToken))));
+                }
+            } else {
+                nextToken = sampler.sampleToken(state.logits);
+                if (echo) {
+                    // log inferred token
+                    System.err.print(Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(nextToken))));
+                }
+                generatedTokens.add(nextToken);
+                if (onTokenGenerated != null) {
+                    onTokenGenerated.accept(nextToken);
+                }
+                if (stopTokens.contains(nextToken)) {
+                    break;
+                }
+            }
+            state.latestToken = token = nextToken;
+        }
+
+        long elapsedNanos = System.nanoTime() - startNanos;
+        int totalTokens = promptIndex + generatedTokens.size();
+        System.err.printf("%n%.2f tokens/s (%d)%n", totalTokens / (elapsedNanos / 1_000_000_000.0), totalTokens);
 
         return generatedTokens;
     }
@@ -2306,6 +2490,7 @@ abstract class FloatTensor implements Externalizable, Comparable {
     FloatTensor mapWithIndexInPlace(int thisOffset, int size, FloatTensor.MapWithIndexFunction mapWithIndexFunction) {
         int endOffset = thisOffset + size;
         for (int i = thisOffset; i < endOffset; ++i) {
+        	System.out.println("setFloat:"+i+" of size:"+size);
             setFloat(i, mapWithIndexFunction.apply(getFloat(i), i));
         }
         return this;
@@ -2364,6 +2549,23 @@ abstract class FloatTensor implements Externalizable, Comparable {
     	float aNorm = (float) Math.sqrt(aNormAdder.sum());
     	float bNorm = (float) Math.sqrt(bNormAdder.sum());
     	return (dotProduct / (aNorm * bNorm));
+    }
+    
+    public void verify() {
+    	System.out.println("size:"+size());
+      	System.out.println("Verified via String of length:"+toString().length());
+    }
+    
+    public String toString() {
+    	StringBuilder sb = new StringBuilder("[");
+    	for(int i = 0; i < size(); i++) {
+    		sb.append(getFloat(i));
+    		if(i == (size()-1)) 
+    			sb.append("]");
+    		else
+    			sb.append(",");
+    	}
+    	return sb.toString();
     }
 }
 
