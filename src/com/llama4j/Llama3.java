@@ -158,8 +158,8 @@ public class Llama3 {
                 case "/context": {
                     System.out.printf("%d out of %d context tokens used (%d tokens remaining)%n",
                             conversationTokens.size(),
-                            options.maxTokens(),
-                            options.maxTokens() - conversationTokens.size());
+                            model.configuration().contextLength,
+                            model.configuration().contextLength - conversationTokens.size());
                     continue;
                 }
             }
@@ -2490,7 +2490,7 @@ abstract class FloatTensor implements Externalizable, Comparable {
     FloatTensor mapWithIndexInPlace(int thisOffset, int size, FloatTensor.MapWithIndexFunction mapWithIndexFunction) {
         int endOffset = thisOffset + size;
         for (int i = thisOffset; i < endOffset; ++i) {
-        	System.out.println("setFloat:"+i+" of size:"+size);
+        	//System.out.println("setFloat:"+i+" of size:"+size);
             setFloat(i, mapWithIndexFunction.apply(getFloat(i), i));
         }
         return this;
