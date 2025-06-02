@@ -2715,9 +2715,14 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
 	@Override
 	public int compareTo(Object o) {
 		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > ((Q4_0FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			byte b;
+			if(i >= ((Q4_0FloatTensor)o).memorySegment.byteSize())
 				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < ((Q4_0FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			else
+				b = ((Q4_0FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
+				return 1;
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
 				return -1;
 		}
 		return 0;
@@ -2856,9 +2861,14 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
 	@Override
 	public int compareTo(Object o) {
 		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > ((Q8_0FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			byte b;
+			if(i >= ((Q8_0FloatTensor)o).memorySegment.byteSize())
 				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < ((Q8_0FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			else
+				b = ((Q8_0FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
+				return 1;
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
 				return -1;
 		}
 		return 0;
@@ -2968,9 +2978,14 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
 	@Override
 	public int compareTo(Object o) {
 		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > ((BF16FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			byte b;
+			if(i >= ((BF16FloatTensor)o).memorySegment.byteSize())
 				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < ((BF16FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			else
+				b = ((BF16FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
+				return 1;
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
 				return -1;
 		}
 		return 0;
@@ -3094,9 +3109,14 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 	@Override
 	public int compareTo(Object o) {
 		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > ((F16FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			byte b;
+			if(i >= ((F16FloatTensor)o).memorySegment.byteSize())
 				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < ((F16FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			else
+				b = ((F16FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
+				return 1;
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
 				return -1;
 		}
 		return 0;
@@ -3161,9 +3181,14 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	@Override
 	public int compareTo(Object o) {
 		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > ((F32FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			byte b;
+			if(i >= ((F32FloatTensor)o).memorySegment.byteSize())
 				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < ((F32FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i))
+			else
+				b = ((F32FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
+				return 1;
+			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
 				return -1;
 		}
 		return 0;
