@@ -112,6 +112,7 @@ public class Llama3 {
         Llama.State state = null;
         List<Integer> conversationTokens = new ArrayList<>();
         ChatFormatInterface chatFormat;
+        System.out.println("Special tokens:"+model.tokenizer().getSpecialTokens());
         // Chat format seems solely based on individual model, so we extract a name in model loader from Metada general.name
         if(ModelLoader.name.equals("mistral")) {
         	chatFormat = new MistralChatFormat(model.tokenizer());
@@ -123,7 +124,10 @@ public class Llama3 {
         			BATCH_SIZE = 1;
         			chatFormat = new ChatMLFormat(model.tokenizer());
         		} else {
-        			throw new IllegalArgumentException("expected metadata general.name containing mistral, llama, or qwen but found "+ModelLoader.name);
+        			if(ModelLoader.name.equals("magistral")) {
+        				chatFormat = new MistralChatFormat(model.tokenizer());
+        			} else
+        				throw new IllegalArgumentException("expected metadata general.name containing mistral, magistral, llama, or qwen but found "+ModelLoader.name);
         		}
         	}
         }
@@ -926,6 +930,9 @@ final class ModelLoader {
         	else
         		if(name.toLowerCase().contains("qwen"))
         			name="qwen";
+        		else
+        			if(name.toLowerCase().contains("magistral"))
+        				name="magistral";
         String[] tokens = (String[]) metadata.get("tokenizer.ggml.tokens");
         if(TOKENIZER_LLAMA_MODEL.equals(model)) {
         	float[] scores = (float[]) metadata.get("tokenizer.ggml.scores");
@@ -981,7 +988,16 @@ final class ModelLoader {
                             weights = loadQwenWeights(tensorEntries, config);
                         }
             		} else {
-            			throw new IllegalArgumentException("expected metadata general.name containing mistral, llama, or qwen but found "+ModelLoader.name);
+            			if(ModelLoader.name.equals("magistral")) {
+                          	tokenizer = createMagistralTokenizer(metadata, vocabulary);
+                        	config = createConfig(arch, metadata, vocabulary, contextLength);
+                            if (loadWeights) {
+                            	// loadTensors corresponds to getTensorEntries in old version
+                                Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
+                                weights = loadLlamaWeights(tensorEntries, config);
+                            }
+            			} else
+            				throw new IllegalArgumentException("expected metadata general.name containing mistral, magistral, llama, or qwen but found "+ModelLoader.name);
             		}
             	}
             }
@@ -1171,7 +1187,29 @@ final class ModelLoader {
                         );
         return new MistralTokenizer(vocabulary, null, specialTokens, tokenTypes);
     }
+    
+    private static Tokenizer createMagistralTokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
+        int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
+        List<Integer> specialTokensList = IntStream.range(0, vocabulary.size()).filter(t -> tokenTypes[t] != 1 && tokenTypes[t] != 6).boxed().toList();
+        Map<String, Integer> specialTokens =
+                IntStream.range(0, specialTokensList.size())
+                        .boxed()
+                        .collect(Collectors.toMap(
+                                t -> vocabulary.get(t),
+                                t -> t)
+                        );
+        String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
+        List<Pair<Integer, Integer>> merges = Arrays.stream(mergeLines)
+                .map(line -> line.split(" "))
+                .map(parts ->
+                        new Pair<>(
+                                vocabulary.getIndex(parts[0]).orElseThrow(),
+                                vocabulary.getIndex(parts[1]).orElseThrow())
+                ).toList();
 
+        return new Tokenizer(vocabulary, merges, LLAMA_3_PATTERN, specialTokens, tokenTypes);
+    }
+    
     public static FloatTensor loadQuantized(GGMLTensorEntry entry) {
         GGMLType ggmlType = entry.ggmlType();
         return switch (ggmlType) {
@@ -1525,16 +1563,13 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         });
         
         if(false) {
-        	SuperBit sb = null;
-        	try (Timer timer = Timer.log("SuperBits:"+state.x[nTokens-1].size())) {
-        		//sb =  new SuperBit(state.x[nTokens-1].size());
-        		sb =  new SuperBit(100);
+        	try (Timer timer = Timer.log("Last vector:"+state.x[nTokens-1].size())) {
         	}
         	try (Timer timer = Timer.log("Signature")) {
-        		sb.signature(state.x[nTokens-1]);
+        		
         	}
-        	try (Timer timer = Timer.log("Store Tensor:"+sb.getSignature().length)) {
-        		Llama3.dbClient.storekv(Llama3.tensorAlias, Llama3.xid, sb, state.x[nTokens-1]);
+        	try (Timer timer = Timer.log("Store Tensor:")) {
+        		Llama3.dbClient.storekv(Llama3.tensorAlias, Llama3.xid, "index" , state.x[nTokens-1]);
         	}
         }
         
@@ -1813,6 +1848,7 @@ interface TokenizerInterface {
 	 public String decode(List<Integer> tokens);
 	 public List<Integer> encodeAsList(String text);
 	 public int getTokenType(int tokenIndex);
+	 public Collection<? extends Integer> encode(String text);
 }
 /**
  * Byte Pair Encoding tokenizer.
@@ -1864,8 +1900,11 @@ class Tokenizer implements TokenizerInterface {
     	this.tokenTypes = tokenTypes;
     }
     
-    private int[] encodeImpl(String text) {
-        return encode(text, Set.of()).stream().mapToInt(i -> i).toArray();
+    //private int[] encodeImpl(String text) {
+    //	return encode(text, Set.of()).stream().mapToInt(i -> i).toArray();
+	//}
+    private int[] encodeImpl(Collection<? extends Integer> intc) {
+    	return intc.stream().mapToInt(i -> i).toArray();
     }
 
     /**
@@ -2031,13 +2070,15 @@ class Tokenizer implements TokenizerInterface {
             .stream()
             .collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey));
 
-    public int[] encode(String text) {
+    public Collection<? extends Integer> encode(String text) {
         StringBuilder sb = new StringBuilder();
+        //List<Integer> encodedValues = new ArrayList<>();
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         for (byte b : bytes) {
-            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
+        	sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
         }
-        return encodeImpl(sb.toString());
+        //return encodedValues;
+        return encode(sb.toString(), Set.of());
     }
 
     public static String replaceControlCharacters(int[] codePoints) {
@@ -2061,7 +2102,7 @@ class Tokenizer implements TokenizerInterface {
     }
     @Override
     public List<Integer> encodeAsList(String text) {
-        return Arrays.stream(encode(text)).boxed().toList();
+        return Arrays.stream(encodeImpl(encode(text))).boxed().toList();
     }
     @Override
     public String decode(List<Integer> tokens) {
@@ -2113,7 +2154,7 @@ class MistralTokenizer implements TokenizerInterface {
         this.byte0 = vocabulary.getIndex("<0x00>").orElseThrow();
     }
 
-    List<Integer> encode(String text) {
+    public List<Integer> encode(String text) {
         return encodeImpl(text.replace(' ', '▁'));
     }
 
@@ -2539,7 +2580,7 @@ abstract class FloatTensor implements Externalizable, Comparable {
         return this;
     }
     
-    float cosineSimilarity(FloatTensor a, FloatTensor b) {
+    static float cosineSimilarity(FloatTensor a, FloatTensor b) {
     	float dotProduct = a.dot(0, b, 0, a.size());
     	DoubleAdder aNormAdder = new DoubleAdder();
     	DoubleAdder bNormAdder = new DoubleAdder();
@@ -3581,7 +3622,7 @@ class ChatFormat implements ChatFormatInterface {
 */
 final class MistralChatFormat implements ChatFormatInterface {
 
-   protected final MistralTokenizer tokenizer;
+   protected final TokenizerInterface tokenizer;
    protected final int unknownToken;
    protected final int beginOfText;
    protected final int endOfText;
@@ -3597,7 +3638,7 @@ final class MistralChatFormat implements ChatFormatInterface {
    protected final int suffix;
 
    public MistralChatFormat(TokenizerInterface tokenizer) {
-       this.tokenizer = (MistralTokenizer)tokenizer;
+       this.tokenizer = tokenizer;
        Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
        this.unknownToken = specialTokens.get("<unk>");
        this.beginOfText = specialTokens.get("<s>");
@@ -3803,548 +3844,5 @@ final class AOT {
             return new Llama(baseModel.configuration().withContextLength(contextLength), baseModel.tokenizer(), weights);
         }
     }
-}
-
-/**
- * Implementation of Super-Bit Locality-Sensitive Hashing.
- * Super-Bit is an improvement of Random Projection LSH.
- * It computes an estimation of cosine similarity.
- *
- * Super-Bit Locality-Sensitive Hashing
- * Jianqiu Ji, Jianmin Li, Shuicheng Yan, Bo Zhang, Qi Tian
- * http://papers.nips.cc/paper/4847-super-bit-locality-sensitive-hashing.pdf
- * Advances in Neural Information Processing Systems 25, 2012
- *
- * Supported input types:
- * - double[]
- * @author original:Thibault Debatty
- * @author Groff
- */
-final class SuperBit implements java.io.Serializable, Comparable {
-	private static final long serialVersionUID = -1L;
-	private boolean[] sig;
-    private transient double[][] hyperplanes;
-    private static final int DEFAULT_CODE_LENGTH = 10000;
-    /**
-     * Initialize SuperBit algorithm.
-     * Super-Bit depth n must be [1 .. d] and number of Super-Bit l in [1 ..
-     * The resulting code length k = n * l
-     * The K vectors are orthogonalized in L batches of N vectors
-     *
-     * @param d data space dimension
-     * @param n Super-Bit depth [1 .. d]
-     * @param l number of Super-Bit [1 ..
-     */
-    public SuperBit(final int d, final int n, final int l) {
-        this(d, n, l, new Random());
-    }
-    /**
-     * Initialize SuperBit algorithm.
-     * Super-Bit depth n must be [1 .. d] and number of Super-Bit l in [1 ..
-     * The resulting code length k = n * l
-     * The K vectors are orthogonalized in L batches of N vectors
-     *
-     * @param d data space dimension
-     * @param n Super-Bit depth [1 .. d]
-     * @param l number of Super-Bit [1 ..
-     * @param seed to use for the random number generator
-     */
-    public SuperBit(final int d, final int n, final int l, final long seed) {
-        this(d, n, l, new Random(seed));
-    }
-    private SuperBit(final int d, final int n, final int l, final Random rand) {
-        if (d <= 0) {
-            throw new IllegalArgumentException("Dimension d must be >= 1");
-        }
-        if (n < 1 || n > d) {
-            throw new IllegalArgumentException(
-                    "Super-Bit depth N must be 1 <= N <= d");
-        }
-        if (l < 1) {
-            throw  new IllegalArgumentException(
-                    "Number of Super-Bit L must be >= 1");
-        }
-        // Input: Data space dimension d, Super-Bit depth 1 <= N <= d,
-        // number of Super-Bit L >= 1,
-        // resulting code length K = N * L
-        // Generate a random matrix H with each element sampled independently
-        // from the normal distribution
-        // N (0, 1), with each column normalized to unit length.
-        // Denote H = [v1, v2, ..., vK].
-        int code_length = n * l;
-        double[][] v = new double[code_length][d];
-        Parallel.parallelFor(0, code_length, t -> {
-            double[] vector = new double[d];
-            for (int j = 0; j < d; j++) {
-                vector[j] = rand.nextGaussian();
-            }
-            normalize(vector);
-            v[t] = vector;
-        });
-        double[][] w = new double[code_length][d];
-        for (int i = 0; i <= l - 1; i++) {
-            for (int j = 1; j <= n; j++) {
-                java.lang.System.arraycopy(
-                        v[i * n + j - 1],
-                        0,
-                        w[i * n + j - 1],
-                        0,
-                        d);
-
-                for (int k = 1; k <= (j - 1); k++) {
-                    w[i * n + j - 1] = sub(
-                            w[i * n + j - 1],
-                            product(
-                                    dotProduct(
-                                            w[i * n + k - 1],
-                                            v[ i * n + j - 1]),
-                                    w[i * n + k - 1]));
-                }
-                normalize(w[i * n + j - 1]);
-            }
-        }
-        this.hyperplanes = w;
-    }
-    /**
-     * Initialize SuperBit algorithm.
-     * With code length K = 10000
-     * The K vectors are orthogonalized in d batches of 10000/d vectors
-     * The resulting mean error is 0.01
-     * @param d The size of the vector we are operating on
-     */
-    public SuperBit(final int d) {
-        this(d, d, DEFAULT_CODE_LENGTH / d, 8675309);
-    }
-    /**
-     * Initialize SuperBit algorithm without parameters
-     * (used only for serialization).
-     */
-    public SuperBit() {}
-    /**
-     * Compute the signature of this vector.
-     * @param vector
-     * @return
-     */
-    public final boolean[] signature(final double[] vector) {
-        boolean[] sig = new boolean[this.hyperplanes.length];
-        for (int i = 0; i < this.hyperplanes.length; i++) {
-            sig[i] = (dotProduct(this.hyperplanes[i], vector) >= 0);
-        }
-        return sig;
-    }
-    /**
-     * Compute the signature of the given FloatTensor, set the encapsulated signature for serialization
-     * @param vector The target FloatTensor
-     */
-    public final void signature(final FloatTensor vector) {
-        sig = new boolean[this.hyperplanes.length];
-        for (int i = 0; i < this.hyperplanes.length; i++) {
-            sig[i] = (dotProduct(this.hyperplanes[i], vector) >= 0);
-        }
-    }
-    public final boolean[] getSignature() {
-    	return sig;
-    }
-    /**
-     * Compute the similarity between two signature, which is also an
-     * estimation of the cosine similarity between the two vectors.
-     * @param sig1
-     * @param sig2
-     * @return estimated cosine similarity
-     */
-    public final double similarity(final boolean[] sig1, final boolean[] sig2) {
-        DoubleAdder agg = new DoubleAdder(); // Thread-safe accumulator
-        Parallel.parallelFor(0, sig1.length, t -> {
-            if (sig1[t] == sig2[t]) {
-                agg.add(1); // Efficient atomic addition
-            }
-        });
-        double sim = agg.sum() / sig1.length; // Use .sum() instead of .get()
-        return Math.cos((1 - sim) * Math.PI);
-    }
-
-    /**
-     * Get the hyperplanes coefficients used to compute signatures.
-     * @return
-     */
-    public final double[][] getHyperplanes() {
-        return this.hyperplanes;
-    }
-    /**
-     * Computes the cosine similarity, computed as v1 dot v2 / (|v1| * |v2|).
-     * Cosine similarity of two vectors is the cosine of the angle between them.
-     * It ranges between -1 and +1
-     *
-     * @param v1
-     * @param v2
-     * @return
-     */
-    public static double cosineSimilarity(final double[]v1, final double[] v2) {
-        return dotProduct(v1, v2) / (norm(v1) * norm(v2));
-    }
-    private static double[] product(final double x, final double[] v) {
-        double[] r = new double[v.length];
-        Parallel.parallelFor(0, v.length, t -> {
-        	 r[t] = x * v[t];
-        }); 
-        return r;
-    }
-    private static double[] sub(final double[] a, final double[] b) {
-        double[] r = new double[a.length];
-        Parallel.parallelFor(0, a.length, t -> {
-        	r[t] = a[t] - b[t];
-        }); 
-        return r;
-    }
-    private static void normalize(final double[] vector) {
-        final double norm = norm(vector);
-        Parallel.parallelFor(0, vector.length, t -> vector[t] /= norm);
-    }
-    /**
-     * Returns the norm L2. sqrt(sum_i(v_i^2))
-     * @param v
-     * @return
-     */
-    private static double norm(final double[] v) {
-        DoubleAdder agg = new DoubleAdder();
-        Parallel.parallelFor(0, v.length, t -> agg.add(v[t] * v[t]));
-        return Math.sqrt(agg.sum());
-    }
-    private static double dotProduct(final double[] v1, final double[] v2) {
-        if (v1.length < 10_000) { // Adjust threshold based on benchmarking
-            return IntStream.range(0, v1.length).mapToDouble(t -> v1[t] * v2[t]).sum();
-        } else {
-            DoubleAdder agg = new DoubleAdder();
-            Parallel.parallelFor(0, v1.length, t -> agg.add(v1[t] * v2[t]));
-            return agg.sum();
-        }
-    }
-    private static double dotProduct(final double[] v1, final FloatTensor v2) {
-        if (v1.length < 10_000) { // Adjust threshold based on benchmarking
-            return IntStream.range(0, v1.length).mapToDouble(t -> v1[t] * v2.getFloat(t)).sum();
-        } else {
-            DoubleAdder agg = new DoubleAdder();
-            Parallel.parallelFor(0, v1.length, t -> agg.add(v1[t] * v2.getFloat(t)));
-            return agg.sum();
-        }
-    } 
-	@Override
-	public int compareTo(Object o) {
-		return Double.compare(similarity(this.sig, ((SuperBit)o).sig), 1.0); // Ensures proper ordering
-	}
-}
-/**
- * MinHash is a hashing scheme that tents to produce similar signatures for sets
- * that have a high Jaccard similarity.
- *
- * The Jaccard similarity between two sets is the relative number of elements
- * these sets have in common: J(A, B) = |A ∩ B| / |A ∪ B| A MinHash signature is
- * a sequence of numbers produced by multiple hash functions hi. It can be shown
- * that the Jaccard similarity between two sets is also the probability that
- * this hash result is the same for the two sets: J(A, B) = Pr[hi(A) = hi(B)].
- * Therefore, MinHash signatures can be used to estimate Jaccard similarity
- * between two sets. Moreover, it can be shown that the expected estimation
- * error is O(1 / sqrt(n)), where n is the size of the signature (the number of
- * hash functions that are used to produce the signature).
- * Initialize the hash function for an similarity error of 0.1:
-	 * For sets built from a dictionary of 5 items
-	 * MinHash minhash = new MinHash(0.1, 5);
- */
-final class MinHash implements java.io.Serializable, Comparable {
-	private static final long serialVersionUID = -1L;
-    private static final int LARGE_PRIME = 2147483647; // = 2^31 - 1 !
-    private static final double THRESHOLD = 0.5;
-    /**
-     * Signature size.
-     */
-    private int n;
-    /**
-     * Random a and b coefficients for the random hash functions.
-     */
-    private long[][] hash_coefs;
-    /**
-     * Dictionary size (is also the size of vectors if the sets are provided
-     * as vectors).
-     */
-    private int dict_size;
-    
-    private int[] sig;
-    /**
-     * Compute the jaccard index between two sets.
-     * @param s1
-     * @param s2
-     * @return
-     */
-    public static double jaccardIndex(final Set<Integer> s1, final Set<Integer> s2) {
-        Set<Integer> intersection = new HashSet<Integer>(s1);
-        intersection.retainAll(s2);
-        Set<Integer> union = new HashSet<Integer>(s1);
-        union.addAll(s2);
-        if (union.isEmpty()) {
-            return 0;
-        }
-        return (double) intersection.size() / union.size();
-    }
-    /**
-     * Compute the exact jaccard index between two sets, represented as
-     * arrays of booleans.
-     * @param s1
-     * @param s2
-     * @return
-     */
-    public static double jaccardIndex(final boolean[] s1, final boolean[] s2) {
-        if (s1.length != s2.length) {
-            throw new InvalidParameterException("sets must be same size!");
-        }
-        return jaccardIndex(convert2Set(s1), convert2Set(s2));
-    }
-    /**
-     * Convert a set represented as an array of booleans to a set of integer.
-     *
-     * @param array
-     * @return
-     */
-    public static Set<Integer> convert2Set(final boolean[] array) {
-        Set<Integer> set = new TreeSet<Integer>();
-        for (int i = 0; i < array.length; i++) {
-            if (array[i]) {
-                set.add(i);
-            }
-        }
-        return set;
-    }
-    public static Set<Integer> convert2Set(final FloatTensor array) {
-        Set<Integer> set = new TreeSet<Integer>();
-        for (int i = 0; i < array.size(); i++) {
-                set.add(Float.floatToRawIntBits(array.getFloat(i)));
-        }
-        return set;
-    }
-    /**
-     * Computes the size of the signature required to achieve a given error in
-     * similarity estimation. (1 / error^2)
-     *
-     * @param error
-     * @return size of the signature
-     */
-    public static int size(final double error) {
-        if (error < 0 && error > 1) {
-            throw new IllegalArgumentException("error should be in [0 .. 1]");
-        }
-        return (int) (1 / (error * error));
-    }
-    /**
-     * Compute the size of the signature according to "Mining of Massive
-     * Datasets" p88.
-     * It can be shown that, using MinHash, the probability that the
-     * signatures of 2 sets with Jaccard similarity s agree in all the
-     * rows of at least one stage (band), and therefore become a candidate
-     * pair, is 1−(1−s^R)^b
-     * where R = signature_size / b (number of rows in a stage/band)
-     * Thus, the curve that shows the probability that 2 items fall in the
-     * same bucket for at least one of the stages, as a function of their
-     * Jaccard index similarity, has a S shape.
-     * The threshold (the value of similarity at which the probability of
-     * becoming a candidate is 1/2) is a function of the number of stages
-     * (s, or bands b in the book) and the signature size:
-     * threshold ≃ (1/s)^(1/R)
-     * Hence the signature size can be computed as:
-     * R = ln(1/s) / ln(threshold)
-     * signature_size = R * b
-     */
-    public static int computeSignatureSize(final int s) {
-        int r = (int) Math.ceil(Math.log(1.0 / s) / Math.log(THRESHOLD)) + 1;
-        return r * s;
-    }
- 
-    public MinHash(FloatTensor vector) {
-    	// signature size, AKA similarity index, given as a value of .1 in example
-    	init(size(0.1), vector.size(), new Random(8675309L));
-    	sig = signature(convert2Set(vector));
-    }
-    /**
-     * Initializes hash functions to compute MinHash signatures for sets built
-     * from a dictionary of dict_size elements.
-     *
-     * @param size the number of hash functions (and the size of resulting
-     * signatures)
-     * @param dict_size
-     */
-    public MinHash(final int size, final int dict_size) {
-        init(size, dict_size, new Random());
-    }
-    /**
-     * Initializes hash function to compute MinHash signatures for sets built
-     * from a dictionary of dict_size elements, with a given similarity
-     * estimation error.
-     *
-     * @param error
-     * @param dict_size
-     */
-    public MinHash(final double error, final int dict_size) {
-        init(size(error), dict_size, new Random());
-    }
-    /**
-     * Initializes hash functions to compute MinHash signatures for sets built
-     * from a dictionary of dict_size elements.
-     *
-     * @param size the number of hash functions (and the size of resulting
-     * signatures)
-     * @param dict_size
-     * @param seed random number generator seed. using the same value will
-     * guarantee identical hashes across object instantiations
-     */
-    public MinHash(final int size, final int dict_size, final long seed) {
-        init(size, dict_size, new Random(seed));
-    }
-    /**
-     * Initializes hash function to compute MinHash signatures for sets built
-     * from a dictionary of dict_size elements, with a given similarity
-     * estimation error.
-     *
-     * @param error
-     * @param dict_size
-     * @param seed random number generator seed. using the same value will
-     * guarantee identical hashes across object instantiations
-     */
-    public MinHash(final double error, final int dict_size, final long seed) {
-        init(size(error), dict_size, new Random(seed));
-    }
-    /**
-     * Computes the signature for this set The input set is represented as an
-     * vector of booleans.
-     * For example the array [true, false, true, true, false]
-     * corresponds to the set {0, 2, 3}
-     *
-     * @param vector
-     * @return the signature
-     */
-    public final int[] signature(final boolean[] vector) {
-        if (vector.length != dict_size) {
-            throw new IllegalArgumentException(
-                    "Size of array should be dict_size");
-        }
-        return signature(convert2Set(vector));
-    }
-    
-    public int[] getSignature() {
-    	return sig;
-    }
-    /**
-     * Computes the signature for this set. For example set = {0, 2, 3}
-     *
-     * @param set
-     * @return the signature
-     */
-    public final int[] signature(final Set<Integer> set) {
-        int[] sig = new int[n];
-        for (int i = 0; i < n; i++) {
-            sig[i] = Integer.MAX_VALUE;
-        }
-        // For each row r:
-        //for (int r = 0; r < dict_size; r++) {
-        // if set has 0 in row r, do nothing
-        //    if (!set.contains(r)) {
-        //        continue;
-        //    }
-        // Loop over true values, instead of loop over all values of dictionary
-        // to speedup computation
-        final List<Integer> list = new ArrayList<Integer>(set);
-        Collections.sort(list);
-        for (final int r : list) {
-            // However, if c has 1 in row r, then for each i = 1, 2, . . . ,n
-            // set SIG(i, c) to the smaller of the current value of
-            // SIG(i, c) and hi(r)
-            for (int i = 0; i < n; i++) {
-                sig[i] = Math.min(sig[i], h(i, r));
-            }
-        }
-        return sig;
-    }
-    /**
-     * Computes an estimation of Jaccard similarity (the number of elements in
-     * common) between two sets, using the MinHash signatures of these two sets.
-     *
-     * @param sig1 MinHash signature of set1
-     * @param sig2 MinHash signature of set2 (produced using the same
-     * coefficients)
-     * @return the estimated similarity
-     */
-    public static final double similarity(final int[] sig1, final int[] sig2) {
-        if (sig1.length != sig2.length) {
-            throw new IllegalArgumentException(
-                    "Size of signatures should be the same");
-        }
-        double sim = 0;
-        for (int i = 0; i < sig1.length; i++) {
-            if (sig1[i] == sig2[i]) {
-                sim += 1;
-            }
-        }
-        return sim / sig1.length;
-    }
-    /**
-     * Computes the expected error of similarity computed using signatures.
-     *
-     * @return the expected error
-     */
-    public final double error() {
-        return 1.0 / Math.sqrt(n);
-    }
-    /**
-     * Compute hash function coefficients using provided Random.
-     * @param size
-     * @param dict_size
-     * @param r
-     */
-    private void init(final int size, final int dict_size, final Random r) {
-        if (size <= 0) {
-            throw new InvalidParameterException(
-                    "Signature size should be positive");
-        }
-        if (dict_size <= 0) {
-            throw new InvalidParameterException(
-                    "Dictionary size (or vector size) should be positive");
-        }
-        // In function h(i, x) the largest value could be
-        // dict_size * dict_size + dict_size
-        // throw an error if dict_size * dict_size + dict_size > Long.MAX_VALUE
-        if (dict_size > (Long.MAX_VALUE - dict_size) / dict_size) {
-            throw new InvalidParameterException(
-                    "Dictionary size (or vector size) is too big and will "
-                            + "cause a multiplication overflow");
-        }
-        this.dict_size = dict_size;
-        this.n = size;
-        // h = (a * x) + b
-        // a and b should be randomly generated in [1,PRIME-1]
-        hash_coefs = new long[n][2];
-        for (int i = 0; i < n; i++) {
-            hash_coefs[i][0] = r.nextInt(LARGE_PRIME - 1) + 1; // a
-            hash_coefs[i][1] = r.nextInt(LARGE_PRIME - 1) + 1; // b
-        }
-    }
-    /**
-     * Computes hi(x) as (a_i * x + b_i) % LARGE_PRIME .
-     *
-     * @param i
-     * @param x
-     * @return the hashed value of x, using ith hash function
-     */
-    private int h(final int i, final int x) {
-        return (int)((hash_coefs[i][0] * (long) x + hash_coefs[i][1]) % LARGE_PRIME);
-    }
-    /**
-     * Get the coefficients used by hash function hi.
-     * @return
-     */
-    public final long[][] getCoefficients() {
-        return hash_coefs;
-    }
-    
-	@Override
-	public int compareTo(Object o) {
-		return Arrays.compare(this.sig, ((MinHash)o).sig); // Ensures proper ordering
-	}
 }
 
