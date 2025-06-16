@@ -1,0 +1,1 @@
+javac -g --enable-preview -source 25 --add-modules jdk.incubator.vector -cp /usr/share/jars/Relatrix.jar:/usr/share/jars/RockSack.jar:/usr/share/jars/rocksdbjni-9.10.0-linux64.jar:/usr/share/jars/jsoup-1.20.1.jar -d target/classes src/com/llama4j/Llama3.java

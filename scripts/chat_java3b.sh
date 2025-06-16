@@ -1,1 +1,1 @@
-java -server -XX:+UseParallelGC -Xmn96g -Xms96g -Xmx96g --enable-preview --add-modules jdk.incubator.vector -jar llama3.jar --model Llama-3.2-3B-Instruct-Q8_0.gguf --chat -n 128000 --seed 42
+java -server -XX:+UseParallelGC -Xmn96g -Xms96g -Xmx96g --enable-preview --add-modules jdk.incubator.vector -cp /usr/share/jars/jsoup-1.20.1.jar:/home/jg/llama3.java-no-unsafe/llama3.jar com.llama4j.Llama3 --model Llama-3.2-3B-Instruct-Q8_0.gguf --chat -n -1

@@ -22,11 +22,14 @@ package com.llama4j;
 
 import jdk.incubator.vector.*;
 
+import java.io.BufferedWriter;
 import java.io.Externalizable;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
 import java.io.PrintStream;
+import java.io.PrintWriter;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -76,10 +79,15 @@ import com.neocoretechs.rocksack.Alias;
 public class Llama3 {
     // Batch-size used in prompt evaluation.
     private static int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
-    private final static boolean DEBUG = false;
+    public final static boolean DEBUG = false;
+    public final static boolean DISPLAY_METADATA = true;
     public static AsynchRelatrixClientTransaction dbClient = null;
     public static TransactionId xid = null;
     public static Alias tensorAlias = null;
+    // metadata dump
+	public static BufferedWriter outputStream = null;
+	public static PrintWriter output = null;
+	public static FileWriter fileWriter = null;
 
     static Sampler selectSampler(int vocabularySize, float temperature, float topp, long rngSeed) {
         Sampler sampler;
@@ -112,7 +120,11 @@ public class Llama3 {
         Llama.State state = null;
         List<Integer> conversationTokens = new ArrayList<>();
         ChatFormatInterface chatFormat;
-        System.out.println("Special tokens:"+model.tokenizer().getSpecialTokens());
+        if(DISPLAY_METADATA) {
+        	Llama3.output.println("Begin Special tokens:");
+        	Llama3.output.println(model.tokenizer().getSpecialTokens());
+        	Llama3.output.println("End Special tokens.\r\n");
+        }
         // Chat format seems solely based on individual model, so we extract a name in model loader from Metada general.name
         if(ModelLoader.name.equals("mistral")) {
         	chatFormat = new MistralChatFormat(model.tokenizer());
@@ -254,6 +266,25 @@ public class Llama3 {
         		dbClient.endTransaction(xid).get();
         		dbClient.close();
         	} catch(InterruptedException | ExecutionException ie) {}
+        }
+        if(Llama3.DISPLAY_METADATA) {
+        	try {
+        		Llama3.outputStream.flush();
+        		Llama3.output.close();
+        	} catch (final IOException e) {
+        		System.err.println("Could not flush metadata file "+e);
+        	} finally {
+        		try {
+        			if (Llama3.outputStream != null) {
+        				Llama3.outputStream.close();
+        			}
+        			if (Llama3.output != null) {
+        				Llama3.output.close();
+        			}
+        		} catch (final IOException e) {
+        			System.err.println("Failed to close file: "+e);
+        		}
+        	}
         }
     }
 
@@ -512,6 +543,15 @@ public class Llama3 {
 
     public static void main(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
+        if(Llama3.DISPLAY_METADATA) {
+        	try {
+        		Llama3.fileWriter = new FileWriter(options.modelPath.toString()+".metadata", false);
+        		Llama3.outputStream = new BufferedWriter(fileWriter);
+        		Llama3.output = new PrintWriter(outputStream);
+        	} catch (final IOException e) {
+        		System.err.println("Could not open file " + options.modelPath.toString()+".metadata\r\n"+e);
+        	}
+        }
         Llama model = AOT.tryUsePreLoaded(options.modelPath(), options.maxTokens());
         if(model == null)
         	model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
@@ -646,14 +686,19 @@ final class GGUF {
         Arena arena = Arena.ofAuto();
         MemorySegment tensorData = fileChannel.map(FileChannel.MapMode.READ_ONLY, tensorDataOffset, fileChannel.size() - tensorDataOffset, arena);
         Map<String, GGMLTensorEntry> tensorEntries = HashMap.newHashMap(tensorInfos.size());
+        if(Llama3.DISPLAY_METADATA)
+        	Llama3.output.println("Begin Tensors:");
         for (Map.Entry<String, GGUFTensorInfo> entry : tensorInfos.entrySet()) {
             GGUFTensorInfo ti = entry.getValue();
             int numberOfElements = FloatTensor.numberOfElements(ti.dimensions());
             int sizeInBytes = Math.toIntExact(ti.ggmlType().byteSizeFor(numberOfElements));
-            System.out.println("Tensor:"+entry.getKey()+"="+ti.name+" offset:"+ti.offset+" dims:"+Arrays.toString(ti.dimensions)+" number elems:"+numberOfElements+" size:"+sizeInBytes);
+            if(Llama3.DISPLAY_METADATA)
+            	Llama3.output.println("Tensor:"+entry.getKey()+"="+ti.name+" offset:"+ti.offset+" dims:"+Arrays.toString(ti.dimensions)+" number elems:"+numberOfElements+" size:"+sizeInBytes);
             MemorySegment memorySegment = tensorData.asSlice(ti.offset(), sizeInBytes);
             tensorEntries.put(ti.name(), new GGMLTensorEntry(tensorData, ti.name(), ti.ggmlType(), ti.dimensions(), memorySegment));
         }
+        if(Llama3.DISPLAY_METADATA)
+        	Llama3.output.println("End Tensors.\r\n");
         return tensorEntries;
     }
 
@@ -955,7 +1000,38 @@ final class ModelLoader {
     public static Llama loadModel(FileChannel fileChannel, GGUF gguf, int contextLength, boolean loadWeights) throws IOException {
         try (var ignored = Timer.log("Load model")) {
             Map<String, Object> metadata = gguf.getMetadata();
-            System.out.println("GGUF metadata:\r\n"+metadata);
+            if(Llama3.DISPLAY_METADATA) {
+            	Llama3.output.println("Begin GGUF Metadata:");
+            	metadata.forEach((k, v) -> {
+            		String valueStr;
+            		if (v != null && v.getClass().isArray()) {
+            			Class<?> componentType = v.getClass().getComponentType();
+            			if (componentType == int.class) {
+            				valueStr = Arrays.toString((int[]) v);
+            			} else if (componentType == byte.class) {
+            				valueStr = Arrays.toString((byte[]) v);
+            			} else if (componentType == double.class) {
+            				valueStr = Arrays.toString((double[]) v);
+            			} else if (componentType == boolean.class) {
+            				valueStr = Arrays.toString((boolean[]) v);
+            			} else if (componentType == char.class) {
+            				valueStr = Arrays.toString((char[]) v);
+            			} else if (componentType == long.class) {
+            				valueStr = Arrays.toString((long[]) v);
+            			} else if (componentType == float.class) {
+            				valueStr = Arrays.toString((float[]) v);
+            			} else if (componentType == short.class) {
+            				valueStr = Arrays.toString((short[]) v);
+            			} else {
+            				valueStr = Arrays.toString((Object[]) v); // for Object arrays
+            			}
+            		} else {
+            			valueStr = String.valueOf(v);
+            		}
+            		Llama3.output.println(k + "=" + valueStr);
+            	});
+            	Llama3.output.println("End GGUF Metadata.\r\n");
+            }
             Vocabulary vocabulary = loadVocabulary(metadata);
             TokenizerInterface tokenizer;
             Llama.Configuration config;
@@ -1001,7 +1077,6 @@ final class ModelLoader {
             		}
             	}
             }
-  
             return new Llama(config, tokenizer, weights);
         }
     }
@@ -1601,10 +1676,12 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		weights.wq[l].matmul(state.xb[0], state.q[0], dim, dim);
     		if (weights.q_bias != null && weights.q_bias[l] != null) {
     			//state.q[0].addInPlace(weights.q_bias[l]);
-    			System.out.println("state:"+state.q[0].size());
-    			state.q[0].verify();
-    			System.out.println("weights:"+weights.q_bias[l].size());
-    			weights.q_bias[l].verify();
+    			if(Llama3.DEBUG) {
+    				System.out.println("state:"+state.q[0].size());
+    				state.q[0].verify();
+    				System.out.println("weights:"+weights.q_bias[l].size());
+    				weights.q_bias[l].verify();
+    			}
        			state.q[0].addInPlace(weights.q_bias[l]);
     		}
     		weights.wk[l].matmul(state.xb[0], state.k[0], kvDim, dim);
@@ -1900,9 +1977,6 @@ class Tokenizer implements TokenizerInterface {
     	this.tokenTypes = tokenTypes;
     }
     
-    //private int[] encodeImpl(String text) {
-    //	return encode(text, Set.of()).stream().mapToInt(i -> i).toArray();
-	//}
     private int[] encodeImpl(Collection<? extends Integer> intc) {
     	return intc.stream().mapToInt(i -> i).toArray();
     }
@@ -2072,12 +2146,10 @@ class Tokenizer implements TokenizerInterface {
 
     public Collection<? extends Integer> encode(String text) {
         StringBuilder sb = new StringBuilder();
-        //List<Integer> encodedValues = new ArrayList<>();
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         for (byte b : bytes) {
         	sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
         }
-        //return encodedValues;
         return encode(sb.toString(), Set.of());
     }
 

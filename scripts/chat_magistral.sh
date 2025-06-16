@@ -1,0 +1,1 @@
+java -ea -server -XX:+UseParallelGC -Xmn96g -Xms96g -Xmx96g --enable-preview --add-modules jdk.incubator.vector -cp /usr/share/jars/jsoup-1.20.1.jar:/home/jg/llama3.java-no-unsafe/llama3.jar com.llama4j.Llama3 --model  mistralai_Magistral-Small-2506-Q8_0.gguf  --chat -n -1
