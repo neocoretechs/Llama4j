@@ -24,6 +24,7 @@ import jdk.incubator.vector.*;
 
 import java.io.BufferedWriter;
 import java.io.Externalizable;
+import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.ObjectInput;
@@ -52,6 +53,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
@@ -66,17 +68,24 @@ import java.util.stream.LongStream;
 import java.util.stream.Stream;
 import java.security.InvalidParameterException;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
 import com.neocoretechs.relatrix.client.asynch.AsynchRelatrixClientTransaction;
+
 import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
+
 import com.neocoretechs.rocksack.Alias;
 
+import com.neocoretechs.cublas.Gemm;
+
 public class Llama3 {
+	private static final Log log = LogFactory.getLog(Llama3.class);
     // Batch-size used in prompt evaluation.
     private static int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
     public final static boolean DEBUG = false;
@@ -88,6 +97,9 @@ public class Llama3 {
 	public static BufferedWriter outputStream = null;
 	public static PrintWriter output = null;
 	public static FileWriter fileWriter = null;
+	public static long cublasHandle;
+	public static BufferPool poolHead   = new BufferPool();
+	public static BufferPool poolScalar = new BufferPool();
 
     static Sampler selectSampler(int vocabularySize, float temperature, float topp, long rngSeed) {
         Sampler sampler;
@@ -552,6 +564,7 @@ public class Llama3 {
         		System.err.println("Could not open file " + options.modelPath.toString()+".metadata\r\n"+e);
         	}
         }
+        Llama3.cublasHandle = Gemm.cublasHandle();
         Llama model = AOT.tryUsePreLoaded(options.modelPath(), options.maxTokens());
         if(model == null)
         	model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
@@ -562,6 +575,8 @@ public class Llama3 {
             runInstructOnce(model, sampler, options);
         }
     }
+
+
 }
 
 final class GGUF {
@@ -1551,49 +1566,95 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             }
 
             // multihead attention. iterate over all heads
+            /*
             Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
                 int token = (int) (ht / config.numberOfHeads);
                 int h = (int) (ht % config.numberOfHeads);
                 // get the query vector for this head
                 // float* q = s.q + h * headSize;
                 int qOffset = h * headSize;
-
                 // attention scores for this head
                 // float* att = s.att + h * config.seq_len;
                 int attOffset = h * config.contextLength;
-
                 // iterate over all timesteps, including the current one
-                for (int t = 0; t <= position + token; t++) {
+               for (int t = 0; t <= position + token; t++) {
                     // get the key vector for this head and at this timestep
                     // float* k = s.key_cache + loff + t * dim + h * headSize;
-                    int keyCacheOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
+                    int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
                     // calculate the attention score as the dot product of q and k
                     float score = state.q[token].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
                     score /= sqrtHeadSize;
                     // save the score to the attention buffer
                     state.att[token].setFloat(attOffset + t, score);
                 }
-
                 // softmax the scores to get attention weights, from 0..position inclusively
                 state.att[token].softmaxInPlace(attOffset, position + token + 1);
-
                 // weighted sum of the values, store back into xb
                 // float* xb = s.xb + h * headSize;
                 int xbOffset = h * headSize;
                 // memset(xb, 0, headSize * sizeof(float));
                 state.xb[token].fillInPlace(xbOffset, headSize, 0f);
-
                 for (int t = 0; t <= position + token; t++) {
                     // get the value vector for this head and at this timestep
                     // float* v = s.value_cache + loff + t * dim + h * headSize;
-                    int vOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
+                    int vOffset = t * kvDim + (h / kvMul) * headSize;
                     // get the attention weight for this timestep
                     float a = state.att[token].getFloat(attOffset + t);
                     // accumulate the weighted value into xb
                     state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
                 }
             });
+            */
 
+            // CUBLAS version of above parallel loop
+            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+                final int token = (int) (ht / config.numberOfHeads);
+                final int h     = (int) (ht % config.numberOfHeads);
+                // Offsets for this head
+                final int qOffset   = h * headSize;
+                final int attOffset = h * config.contextLength;
+                // Time horizon for this token (inclusive of current position)
+                final int T = position + token + 1;
+                // 1) Build batched inputs: same query across all timesteps, different key per timestep.
+                // IMPORTANT: avoid hot-path allocations; use pooled or zero-copy views if available.
+                final ArrayList<float[]> queries = new ArrayList<>(T);
+                final ArrayList<float[]> keys    = new ArrayList<>(T);
+                final ArrayList<float[]> results = new ArrayList<>(T);
+                // One query vector for this head (1 x headSize), reused across all t.
+                // Per head:
+                final float[] qVec = state.q[token].exportSlicePooled(Llama3.poolHead, qOffset, headSize);
+                System.out.println("qVec="+(qVec != null ? qVec.length : " qVec null!"));
+                for (int t = 0; t < T; t++) {
+                    final int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
+                    final float[] kVec = state.keyCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
+                    queries.add(qVec);
+                    keys.add(kVec);
+                    results.add(Llama3.poolScalar.acquire(1));
+                }
+                System.out.println("queries="+(queries != null ? queries.size() : " queries null!"));
+                System.out.println("keys="+(keys != null ? keys.size() : " keys null!"));
+                System.out.println("results="+(results != null ? results.size() : " reuslts null!"));
+                Gemm.matrixDotProductFBatch(Llama3.cublasHandle, 1, headSize, queries, headSize, 1, keys, results, T);
+                // 3) Write attention scores and apply scaling
+                for (int t = 0; t < T; t++) {
+                    final float score = results.get(t)[0] / sqrtHeadSize;
+                    state.att[token].setFloat(attOffset + t, score);
+                }
+                state.att[token].softmaxInPlace(attOffset, T);
+                // 4) Weighted sum over values → xb
+                final int xbOffset = h * headSize;
+                state.xb[token].fillInPlace(xbOffset, headSize, 0f);
+                for (int t = 0; t < T; t++) {
+                    final int vOffset = t * kvDim + (h / kvMul) * headSize;
+                    final float a = state.att[token].getFloat(attOffset + t);
+                    state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
+                }
+                Llama3.poolHead.release(qVec);
+                for (float[] k : keys) Llama3.poolHead.release(k);
+                for (float[] r : results) Llama3.poolScalar.release(r);
+            });
+            //---end CUBLAS version
+            
             // final matmul to get the output of the attention
             weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, dim);
 
@@ -1917,6 +1978,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
 
         return generatedTokens;
     }
+    
 }
 
 interface TokenizerInterface {
@@ -2357,1027 +2419,6 @@ record GGMLTensorEntry(MemorySegment mappedFile, String name, GGMLType ggmlType,
                        MemorySegment memorySegment) {
 }
 
-enum GGMLType {
-    F32(Float.BYTES),
-    F16(GGMLType.FLOAT16_BYTES),
-    Q4_0(GGMLType.FLOAT16_BYTES + 16 * Byte.BYTES, 32),
-    Q4_1(2 * GGMLType.FLOAT16_BYTES + 16 * Byte.BYTES, 32),
-    UNSUPPORTED_Q4_2(Integer.MAX_VALUE), // support has been removed
-    UNSUPPORTED_Q4_3(Integer.MAX_VALUE), // support has been removed
-    Q5_0(Integer.MAX_VALUE),
-    Q5_1(Integer.MAX_VALUE),
-    Q8_0(GGMLType.FLOAT16_BYTES + 32 * Byte.BYTES, 32),
-    Q8_1(32 * Byte.BYTES + 2 * Float.BYTES, 32),
-    // k-quantizations
-    Q2_K(Integer.MAX_VALUE),
-    Q3_K(Integer.MAX_VALUE),
-    Q4_K(2 * GGMLType.FLOAT16_BYTES + ((GGMLType.QK_K / 16) / 8 * 6) + GGMLType.QK_K / 2, GGMLType.QK_K),
-    Q5_K(2 * GGMLType.FLOAT16_BYTES + ((GGMLType.QK_K / 16) / 8 * 6) + GGMLType.QK_K / 8 + GGMLType.QK_K / 2, GGMLType.QK_K),
-    Q6_K(GGMLType.QK_K / 2 + GGMLType.QK_K / 4 + GGMLType.QK_K / 16 + GGMLType.FLOAT16_BYTES, GGMLType.QK_K),
-    Q8_K(Integer.MAX_VALUE),
-
-    IQ2_XXS(Integer.MAX_VALUE),
-    IQ2_XS(Integer.MAX_VALUE),
-    IQ3_XXS(Integer.MAX_VALUE),
-    IQ1_S(Integer.MAX_VALUE),
-    IQ4_NL(Integer.MAX_VALUE),
-    IQ3_S(Integer.MAX_VALUE),
-    IQ2_S(Integer.MAX_VALUE),
-    IQ4_XS(Integer.MAX_VALUE),
-
-    I8(Byte.BYTES),
-    I16(Short.BYTES),
-    I32(Integer.BYTES),
-    I64(Long.BYTES),
-    F64(Double.BYTES),
-    IQ1_M(Integer.MAX_VALUE),
-    BF16(GGMLType.BFLOAT16_BYTES),
-    Q4_0_4_4(GGMLType.FLOAT16_BYTES + 16 * Byte.BYTES, 32),
-    Q4_0_4_8(GGMLType.FLOAT16_BYTES + 16 * Byte.BYTES, 32),
-    Q4_0_8_8(GGMLType.FLOAT16_BYTES + 16 * Byte.BYTES, 32),
-    TQ1_0(Integer.MAX_VALUE),
-    TQ2_0(Integer.MAX_VALUE);
-
-    public static final int BFLOAT16_BYTES = 2;
-    public static final int FLOAT16_BYTES = 2;
-
-    private static final GGMLType[] VALUES = values();
-
-    private final int typeSize;
-
-    private final int blockSize;
-
-    public int getTypeSize() {
-        return typeSize;
-    }
-
-    public int getBlockSize() {
-        return blockSize;
-    }
-
-    public static GGMLType fromId(int id) {
-        return VALUES[id];
-    }
-
-    GGMLType(int typeSize) {
-        this(typeSize, 1);
-    }
-
-    public long byteSizeFor(int numberOfElements) {
-        long t = numberOfElements * (long) getTypeSize();
-        assert t % getBlockSize() == 0;
-        return Math.toIntExact(t / getBlockSize());
-    }
-
-    public static final int QK_K = 256; // or 64?
-
-    GGMLType(int typeSize, int blockSize) {
-        assert blockSize > 0;
-        assert typeSize > 0;
-        assert isPowerOf2(blockSize);
-        this.typeSize = typeSize;
-        this.blockSize = blockSize;
-    }
-
-    private static boolean isPowerOf2(int n) {
-        return n > 0 && (n & (n - 1)) == 0;
-    }
-}
-
-/**
- * Over-simplified, shapeless, float tensor.
- * <p>
- * Not a strict tensor, but rather just a sequence of floats, not required to be backed by memory
- * e.g. can represent a sequence of quantized floats.
- */
-abstract class FloatTensor implements Externalizable, Comparable {
-    static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
-    static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
-
-    static short readShort(MemorySegment memorySegment, long offset) {
-        return memorySegment.get(ValueLayout.JAVA_SHORT, offset);
-        //return UNSAFE.getShort(memorySegment.address() + offset);
-    }
-    
-    static int readInt(MemorySegment memorySegment, long offset) {
-        return memorySegment.get(ValueLayout.JAVA_INT, offset);
-        //return UNSAFE.getShort(memorySegment.address() + offset);
-    }
-    
-    static float readFloat(MemorySegment memorySegment, long offset) {
-        return memorySegment.get(ValueLayout.JAVA_FLOAT, offset);
-        //return UNSAFE.getShort(memorySegment.address() + offset);
-    }
-    
-    static byte readByte(MemorySegment memorySegment, long offset) {
-        return memorySegment.get(ValueLayout.JAVA_BYTE, offset);
-        //return UNSAFE.getByte(memorySegment.address() + offset);
-    }
-
-    // Preferred vector size for the fast multiplication routines.
-    // (Apple Silicon) NEON only supports up-to 128bit vectors.
-    static final VectorSpecies<Float> F_SPECIES;
-    static final VectorSpecies<Integer> I_SPECIES;
-    static final VectorSpecies<Short> S_SPECIES_HALF;
-
-    static {
-        if (USE_VECTOR_API) {
-            F_SPECIES = VectorShape.forBitSize(VECTOR_BIT_SIZE).withLanes(float.class);
-            I_SPECIES = F_SPECIES.withLanes(int.class);
-            S_SPECIES_HALF = VectorShape.forBitSize(F_SPECIES.vectorBitSize() / 2).withLanes(short.class);
-            assert F_SPECIES.length() == S_SPECIES_HALF.length();
-        } else {
-            F_SPECIES = null;
-            I_SPECIES = null;
-            S_SPECIES_HALF = null;
-        }
-    }
-
-    abstract int size();
-
-    abstract float getFloat(int index);
-
-    abstract void setFloat(int index, float value);
-
-    abstract FloatVector getFloatVector(VectorSpecies<Float> species, int offset);
-
-    abstract GGMLType type();
-
-    public static int numberOfElements(int... dimensions) {
-        assert Arrays.stream(dimensions).allMatch(i -> i > 0);
-        return Arrays.stream(dimensions).reduce(Math::multiplyExact).orElseThrow();
-    }
-
-    static float scalarDot(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) {
-        float result = 0f;
-        for (int j = 0; j < size; j++) {
-            result += thiz.getFloat(thisOffset + j) * that.getFloat(thatOffset + j);
-        }
-        return result;
-    }
-
-    float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        return scalarDot(this, thisOffset, that, thatOffset, size);
-    }
-
-    void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
-        Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(i * dim1, that, 0, dim1)));
-    }
-
-    void matmul(int context, FloatTensor[] that, FloatTensor[] out, int dim0, int dim1) {
-        if (that.length != out.length) {
-            throw new IllegalArgumentException(String.format("that.len=%d, out.len=%d", that.length, out.length));
-        }
-        Parallel.parallelForLong(0, dim0 * context, ti -> {
-            int idxArr = (int) (ti / dim0);
-            int i = (int) (ti % dim0);
-            out[idxArr].setFloat(i, dot(i * dim1, that[idxArr], 0, dim1)); 
-        });
-    }
-
-    @FunctionalInterface
-    interface AggregateFunction {
-        float apply(float acc, float value);
-    }
-
-    float reduce(int thisOffset, int size, float seed, AggregateFunction reduce) {
-        float result = seed;
-        for (int i = 0; i < size; ++i) {
-            result = reduce.apply(result, getFloat(thisOffset + i));
-        }
-        return result;
-    }
-
-    float sum(int thisOffset, int size) {
-        return reduce(thisOffset, size, 0f, Float::sum);
-    }
-
-    float max(int thisOffset, int size) {
-        return reduce(thisOffset, size, Float.NEGATIVE_INFINITY, Float::max);
-    }
-
-    void copyTo(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        that.mapWithIndexInPlace(thatOffset, size, (value, index) -> this.getFloat(index - thatOffset + thisOffset));
-    }
-
-    int argmax(int thisOffset, int size) {
-        assert size > 0;
-        int maxIndex = thisOffset;
-        float maxValue = this.getFloat(maxIndex);
-        int endIndex = thisOffset + size;
-        for (int i = thisOffset; i < endIndex; ++i) {
-            float f = this.getFloat(i);
-            if (f > maxValue) {
-                maxValue = f;
-                maxIndex = i;
-            }
-        }
-        return maxIndex;
-    }
-
-    int argmax() {
-        return argmax(0, size());
-    }
-
-    @FunctionalInterface
-    interface MapFunction {
-        float apply(float value);
-    }
-
-    @FunctionalInterface
-    interface MapWithIndexFunction {
-        float apply(float value, int index);
-    }
-
-    FloatTensor mapInPlace(int thisOffset, int size, MapFunction mapFunction) {
-        int endIndex = thisOffset + size;
-        for (int i = thisOffset; i < endIndex; ++i) {
-            setFloat(i, mapFunction.apply(getFloat(i)));
-        }
-        return this;
-    }
-
-    FloatTensor mapInPlace(MapFunction mapFunction) {
-        return mapInPlace(0, size(), mapFunction);
-    }
-
-    FloatTensor mapWithIndexInPlace(int thisOffset, int size, FloatTensor.MapWithIndexFunction mapWithIndexFunction) {
-        int endOffset = thisOffset + size;
-        for (int i = thisOffset; i < endOffset; ++i) {
-        	//System.out.println("setFloat:"+i+" of size:"+size);
-            setFloat(i, mapWithIndexFunction.apply(getFloat(i), i));
-        }
-        return this;
-    }
-
-    FloatTensor addInPlace(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        return mapWithIndexInPlace(thisOffset, size, (value, index) -> value + that.getFloat(index - thisOffset + thatOffset));
-    }
-
-    FloatTensor addInPlace(FloatTensor that) {
-        return addInPlace(0, that, 0, size());
-    }
-
-    FloatTensor multiplyInPlace(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        return mapWithIndexInPlace(thisOffset, size, (value, index) -> value * that.getFloat(index - thisOffset + thatOffset));
-    }
-
-    FloatTensor multiplyInPlace(FloatTensor that) {
-        return multiplyInPlace(0, that, 0, size());
-    }
-
-    FloatTensor divideInPlace(int thisOffset, int size, float value) {
-        return mapInPlace(thisOffset, size, f -> f / value);
-    }
-
-    FloatTensor fillInPlace(int thisOffset, int size, float value) {
-        return mapInPlace(thisOffset, size, unused -> value);
-    }
-
-    FloatTensor softmaxInPlace(int thisOffset, int size) {
-        // find max value (for numerical stability)
-        float maxVal = max(thisOffset, size);
-        // exp and sum
-        mapInPlace(thisOffset, size, f -> (float) Math.exp(f - maxVal));
-        float sum = sum(thisOffset, size);
-        // normalize
-        return divideInPlace(thisOffset, size, sum);
-    }
-
-    FloatTensor saxpyInPlace(int thisOffset, FloatTensor that, int thatOffset, int size, float a) {
-        // this[thatOffset ... thatOffset + size) = a * that[thatOffset ... thatOffset + size) + this[thisOffset ... thisOffset + size)
-        for (int i = 0; i < size; ++i) {
-            setFloat(thisOffset + i, a * that.getFloat(thatOffset + i) + this.getFloat(thisOffset + i));
-        }
-        return this;
-    }
-    
-    static float cosineSimilarity(FloatTensor a, FloatTensor b) {
-    	float dotProduct = a.dot(0, b, 0, a.size());
-    	DoubleAdder aNormAdder = new DoubleAdder();
-    	DoubleAdder bNormAdder = new DoubleAdder();
-    	Parallel.parallelFor(0, a.size(), t -> {
-    	    aNormAdder.add(a.getFloat(t) * a.getFloat(t));
-    	    bNormAdder.add(b.getFloat(t) * b.getFloat(t));
-    	});
-    	float aNorm = (float) Math.sqrt(aNormAdder.sum());
-    	float bNorm = (float) Math.sqrt(bNormAdder.sum());
-    	return (dotProduct / (aNorm * bNorm));
-    }
-    
-    public void verify() {
-    	System.out.println("size:"+size());
-      	System.out.println("Verified via String of length:"+toString().length());
-    }
-    
-    public String toString() {
-    	StringBuilder sb = new StringBuilder("[");
-    	for(int i = 0; i < size(); i++) {
-    		sb.append(getFloat(i));
-    		if(i == (size()-1)) 
-    			sb.append("]");
-    		else
-    			sb.append(",");
-    	}
-    	return sb.toString();
-    }
-}
-
-
-/**
- * {@link FloatTensor} quantized in the {@link GGMLType#Q4_0} format.
- * <p>
- * This tensor implementation is not compatible with {@link FloatTensor}, but
- * {@link #dot(int, FloatTensor, int, int)} has a vectorized implementation that is used when
- * the second argument implements {@link FloatTensor}.
- */
-final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
-	private static final long serialVersionUID = -1L;
-
-	int size;
-    transient MemorySegment memorySegment;
-
-    public Q4_0FloatTensor() {}
-    
-    public Q4_0FloatTensor(int size, MemorySegment memorySegment) {
-        this.size = size;
-        this.memorySegment = memorySegment;
-    }
-
-    @Override
-    int size() {
-        return size;
-    }
-
-    @Override
-    public void setFloat(int index, float value) {
-        throw new UnsupportedOperationException("setFloat");
-    }
-
-    @Override
-    FloatVector getFloatVector(VectorSpecies<Float> species, int index) {
-        throw new UnsupportedOperationException("getFloatVector");
-    }
-
-    @Override
-    public GGMLType type() {
-        return GGMLType.Q4_0;
-    }
-
-    @Override
-    public float getFloat(int index) {
-        assert 0 <= index && index < size;
-        int blockIndex = index / GGMLType.Q4_0.getBlockSize();
-        int blockOffset = blockIndex * GGMLType.Q4_0.getTypeSize();
-        float scale = Float.float16ToFloat(readShort(memorySegment, blockOffset));
-        byte quant;
-        int modIndex = index % GGMLType.Q4_0.getBlockSize();
-        if (modIndex < GGMLType.Q4_0.getBlockSize() / 2) {
-            quant = (byte) (readByte(memorySegment, blockOffset + GGMLType.FLOAT16_BYTES + modIndex) & 0x0F);
-        } else {
-            quant = (byte) ((readByte(memorySegment, blockOffset + GGMLType.FLOAT16_BYTES + modIndex - GGMLType.Q4_0.getBlockSize() / 2) >>> 4) & 0x0F);
-        }
-        quant -= 8;
-        return quant * scale;
-    }
-
-    @Override
-    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        if (FloatTensor.USE_VECTOR_API) {
-            return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-        } else {
-            return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-        }
-    }
-
-    private static float vectorDot(Q4_0FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {
-        float result = 0f;
-        int j = 0;
-
-        // Align thisOffset + j to type().getBlockSize().
-        assert Integer.bitCount(GGMLType.Q4_0.getBlockSize()) == 1 : "power of 2";
-        int alignmentBound = Math.min(size, -thisOffset & (GGMLType.Q4_0.getBlockSize() - 1));
-        if (alignmentBound > 0) {
-            result += FloatTensor.scalarDot(thiz, thisOffset, that, thatOffset, alignmentBound);
-            j += alignmentBound;
-        }
-        assert (thisOffset + j) % GGMLType.Q4_0.getBlockSize() == 0;
-
-        FloatVector val = FloatVector.zero(F_SPECIES);
-        int blockOffset = (thisOffset + j) / GGMLType.Q4_0.getBlockSize() * GGMLType.Q4_0.getTypeSize();
-        int upperBound = size / GGMLType.Q4_0.getBlockSize() * GGMLType.Q4_0.getBlockSize();
-        for (; j < upperBound; j += GGMLType.Q4_0.getBlockSize(), blockOffset += GGMLType.Q4_0.getTypeSize()) {
-            float wScaleValue = Float.float16ToFloat(readShort(thiz.memorySegment, blockOffset));
-            var wScale = FloatVector.broadcast(F_SPECIES, wScaleValue);
-            var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_128, thiz.memorySegment, blockOffset + GGMLType.FLOAT16_BYTES, ByteOrder.LITTLE_ENDIAN);
-            var loBytes = wBytes.and((byte) 0xF).sub((byte) 8);
-            var hiBytes = wBytes.lanewise(VectorOperators.LSHR, 4).sub((byte) 8);
-            switch (F_SPECIES.vectorBitSize()) {
-                case 512 -> {
-                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(loBytes.castShape(F_SPECIES, 0));
-                    var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(hiBytes.castShape(F_SPECIES, 0));
-                    val = sum0.add(sum2).fma(wScale, val);
-                }
-                case 256 -> {
-                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(loBytes.castShape(F_SPECIES, 0));
-                    var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(loBytes.castShape(F_SPECIES, 1));
-                    var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + 2 * F_SPECIES.length()).mul(hiBytes.castShape(F_SPECIES, 0));
-                    var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + 3 * F_SPECIES.length()).mul(hiBytes.castShape(F_SPECIES, 1));
-                    val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
-                }
-                case 128 -> {
-                    // This loop cannot be unrolled, why?
-                    for (int i = 0; i < 2; ++i) {
-                        var tmp = i == 0 ? loBytes : hiBytes;
-                        var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 0) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 0));
-                        var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 1) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 1));
-                        var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 2) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 2));
-                        var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 3) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 3));
-                        val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
-                    }
-                }
-                default -> throw new UnsupportedOperationException(F_SPECIES.toString());
-            }
-        }
-        result += val.reduceLanes(VectorOperators.ADD);
-
-        // Remaining entries.
-        if (j < size) {
-            result += FloatTensor.scalarDot(thiz, thisOffset + j, that, thatOffset + j, size - j);
-        }
-
-        return result;
-    }
-
-	@Override
-	public void writeExternal(ObjectOutput out) throws IOException {
-		out.writeInt(size);
-		out.writeLong(memorySegment.byteSize());
-		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
-	}
-
-	@Override
-	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		size = in.readInt();
-		long bs = in.readLong();
-		memorySegment = Arena.ofAuto().allocate(bs, 1);
-		for(int i = 0; i < bs; i++)
-			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
-	}
-
-	@Override
-	public int compareTo(Object o) {
-		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			byte b;
-			if(i >= ((Q4_0FloatTensor)o).memorySegment.byteSize())
-				return 1;
-			else
-				b = ((Q4_0FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
-				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
-				return -1;
-		}
-		return 0;
-	}
-}
-
-final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
-	private static final long serialVersionUID = -1L;
-
-	int size;
-    transient MemorySegment memorySegment;
-
-    public Q8_0FloatTensor() {}
-    
-    public Q8_0FloatTensor(int size, MemorySegment memorySegment) {
-        this.size = size;
-        this.memorySegment = memorySegment;
-    }
-
-    @Override
-    int size() {
-        return size;
-    }
-
-    @Override
-    public void setFloat(int index, float value) {
-        throw new UnsupportedOperationException("setFloat");
-    }
-
-    @Override
-    FloatVector getFloatVector(VectorSpecies<Float> species, int index) {
-        throw new UnsupportedOperationException("getFloatVector");
-    }
-
-    @Override
-    public GGMLType type() {
-        return GGMLType.Q8_0;
-    }
-
-    @Override
-    public float getFloat(int index) {
-        assert 0 <= index && index < size;
-        int blockIndex = index / GGMLType.Q8_0.getBlockSize();
-        int withinBlockIndex = index % GGMLType.Q8_0.getBlockSize();
-        int blockOffset = blockIndex * GGMLType.Q8_0.getTypeSize();
-        byte quant = readByte(memorySegment, blockOffset + GGMLType.FLOAT16_BYTES + withinBlockIndex);
-        float scale = Float.float16ToFloat(readShort(memorySegment, blockOffset));
-        return quant * scale;
-    }
-
-    public static final ValueLayout.OfShort JAVA_SHORT_LE = ValueLayout.JAVA_SHORT.withOrder(ByteOrder.LITTLE_ENDIAN);
-
-    @Override
-    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        if (FloatTensor.USE_VECTOR_API) {
-            return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-        } else {
-            return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-        }
-    }
-
-    private static float vectorDot(Q8_0FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {
-        float result = 0f;
-        int j = 0;
-
-        // Align thisOffset + startIndex to type().getBlockSize().
-        assert Integer.bitCount(GGMLType.Q8_0.getBlockSize()) == 1 : "power of 2";
-        int alignmentBound = Math.min(size, -thisOffset & (GGMLType.Q8_0.getBlockSize() - 1));
-        if (alignmentBound > 0) {
-            result += FloatTensor.scalarDot(thiz, thisOffset, that, thatOffset, alignmentBound);
-            j += alignmentBound;
-        }
-        assert (thisOffset + j) % GGMLType.Q8_0.getBlockSize() == 0;
-
-        FloatVector val = FloatVector.zero(F_SPECIES);
-        int blockOffset = (thisOffset + j) / GGMLType.Q8_0.getBlockSize() * GGMLType.Q8_0.getTypeSize();
-        int upperBound = size / GGMLType.Q8_0.getBlockSize() * GGMLType.Q8_0.getBlockSize();
-        for (; j < upperBound; j += GGMLType.Q8_0.getBlockSize(), blockOffset += GGMLType.Q8_0.getTypeSize()) {
-            float wScaleValue = Float.float16ToFloat(readShort(thiz.memorySegment, blockOffset));
-            var wScale = FloatVector.broadcast(F_SPECIES, wScaleValue);
-            switch (F_SPECIES.vectorBitSize()) {
-                case 512 -> {
-                    var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, thiz.memorySegment, blockOffset + GGMLType.FLOAT16_BYTES, ByteOrder.LITTLE_ENDIAN);
-                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 0));
-                    var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 1));
-                    val = sum0.add(sum1).fma(wScale, val);
-                }
-                case 256 -> {
-                    var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, thiz.memorySegment, blockOffset + GGMLType.FLOAT16_BYTES, ByteOrder.LITTLE_ENDIAN);
-                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 0));
-                    var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 1));
-                    var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + 2 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 2));
-                    var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + 3 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 3));
-                    val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
-                }
-                case 128 -> {
-                    // This loop cannot be unrolled, why?
-                    for (int i = 0; i < 2; ++i) {
-                        var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_128, thiz.memorySegment, blockOffset + GGMLType.FLOAT16_BYTES + i * ByteVector.SPECIES_128.vectorByteSize(), ByteOrder.LITTLE_ENDIAN);
-                        var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 0 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 0));
-                        var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 1 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 1));
-                        var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 2 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 2));
-                        var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 3 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 3));
-                        val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
-                    }
-                }
-                default -> throw new UnsupportedOperationException(F_SPECIES.toString());
-            }
-        }
-        result += val.reduceLanes(VectorOperators.ADD);
-
-        // Remaining entries.
-        if (j < size) {
-            result += FloatTensor.scalarDot(thiz, thisOffset + j, that, thatOffset + j, size - j);
-        }
-
-        return result;
-    }
-
-	@Override
-	public void writeExternal(ObjectOutput out) throws IOException {
-		out.writeInt(size);
-		out.writeLong(memorySegment.byteSize());
-		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
-	}
-
-	@Override
-	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		size = in.readInt();
-		long bs = in.readLong();
-		memorySegment = Arena.ofAuto().allocate(bs, 1);
-		for(int i = 0; i < bs; i++)
-			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
-	}
-
-	@Override
-	public int compareTo(Object o) {
-		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			byte b;
-			if(i >= ((Q8_0FloatTensor)o).memorySegment.byteSize())
-				return 1;
-			else
-				b = ((Q8_0FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
-				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
-				return -1;
-		}
-		return 0;
-	}
-}
-
-final class BF16FloatTensor extends FloatTensor implements Externalizable, Comparable {
-	private static final long serialVersionUID = -1L;
-
-    int size;
-    transient MemorySegment memorySegment;
-    
-    public BF16FloatTensor() {}
-    
-    public BF16FloatTensor(int size, MemorySegment memorySegment) {
-        this.size = size;
-        this.memorySegment = memorySegment;
-    }
-
-    @Override
-    int size() {
-        return size;
-    }
-
-    @Override
-    public void setFloat(int index, float value) {
-        throw new UnsupportedOperationException("setFloat");
-    }
-
-    @Override
-    FloatVector getFloatVector(VectorSpecies<Float> species, int index) {
-        throw new UnsupportedOperationException("getFloatVector");
-    }
-
-    @Override
-    public GGMLType type() {
-        return GGMLType.BF16;
-    }
-
-    @Override
-    public float getFloat(int index) {
-        assert 0 <= index && index < size;
-        return bfloat16ToFloat(readShort(memorySegment, index * GGMLType.BFLOAT16_BYTES));
-    }
-
-    private float bfloat16ToFloat(short bfloat16) {
-        return Float.intBitsToFloat(bfloat16 << 16);
-    }
-
-    @Override
-    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        if (FloatTensor.USE_VECTOR_API) {
-            return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-        } else {
-            return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-        }
-    }
-
-    private static float vectorDot(BF16FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {
-        assert S_SPECIES_HALF.length() == F_SPECIES.length();
-        FloatVector val = FloatVector.zero(F_SPECIES);
-        int upperBound = F_SPECIES.loopBound(size);
-        for (int i = 0; i < upperBound; i += F_SPECIES.length()) {
-            FloatVector thatVector = that.getFloatVector(F_SPECIES, thatOffset + i);
-            ShortVector bfloat16 = ShortVector.fromMemorySegment(S_SPECIES_HALF, thiz.memorySegment, (thisOffset + i) * (long) GGMLType.BFLOAT16_BYTES, ByteOrder.LITTLE_ENDIAN);
-            // BFloat16 to Float32 Conversion:
-            //
-            // ┌─[15]─┬─[14]───····───[7]─┬─[6]────····────[0]─┐
-            // │ Sign │ Exponent (8 bits) │ Mantissa (7 bits)  │ BFloat16 Layout (16 bits)
-            // └──────┴───────────────────┴────────────────────┘
-            //    │             │                    │
-            //    ▼             ▼                    ▼
-            // ┌─[31]─┬─[30]───···───[23]─┬─[22]────···────[0]─┐
-            // │ Sign │ Exponent (8 bits) │ Mantissa (23 bits) │ Float32 Layout (32 bits)
-            // └──────┴───────────────────┴────────────────────┘
-            FloatVector thizVector = bfloat16
-                    .castShape(I_SPECIES, 0) // (int) vi
-                    .lanewise(VectorOperators.LSHL, 16) // vi <<= 16
-                    .reinterpretAsFloats(); // Float.intBitsToFloat(vi)
-            val = thizVector.fma(thatVector, val);
-        }
-        float result = val.reduceLanes(VectorOperators.ADD);
-        // Remaining entries.
-        if (upperBound < size) {
-            result += scalarDot(thiz, thisOffset + upperBound, that, thatOffset + upperBound, size - upperBound);
-        }
-
-        return result;
-    }
-
-	@Override
-	public void writeExternal(ObjectOutput out) throws IOException {
-		out.writeInt(size);
-		out.writeLong(memorySegment.byteSize());
-		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
-	}
-
-	@Override
-	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		size = in.readInt();
-		long bs = in.readLong();
-		memorySegment = Arena.ofAuto().allocate(bs, 1);
-		for(int i = 0; i < bs; i++)
-			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
-	}
-
-	@Override
-	public int compareTo(Object o) {
-		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			byte b;
-			if(i >= ((BF16FloatTensor)o).memorySegment.byteSize())
-				return 1;
-			else
-				b = ((BF16FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
-				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
-				return -1;
-		}
-		return 0;
-	}
-}
-
-final class F16FloatTensor extends FloatTensor implements Externalizable, Comparable {
-	private static final long serialVersionUID = -1L;
-
-    int size;
-    transient MemorySegment memorySegment;
-
-    public F16FloatTensor() {}
-    
-    public F16FloatTensor(int size, MemorySegment memorySegment) {
-        this.size = size;
-        this.memorySegment = memorySegment;
-    }
-
-    @Override
-    int size() {
-        return size;
-    }
-
-    @Override
-    public void setFloat(int index, float value) {
-        throw new UnsupportedOperationException("setFloat");
-    }
-
-    @Override
-    FloatVector getFloatVector(VectorSpecies<Float> species, int index) {
-        throw new UnsupportedOperationException("getFloatVector");
-    }
-
-    @Override
-    public GGMLType type() {
-        return GGMLType.F16;
-    }
-
-    @Override
-    public float getFloat(int index) {
-        assert 0 <= index && index < size;
-        return Float.float16ToFloat(readShort(memorySegment, index * GGMLType.FLOAT16_BYTES));
-    }
-
-    @Override
-    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        if (FloatTensor.USE_VECTOR_API) {
-            return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-        } else {
-            return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-        }
-    }
-
-    private static float vectorDot(F16FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {
-        assert S_SPECIES_HALF.length() == F_SPECIES.length();
-        FloatVector val = FloatVector.zero(F_SPECIES);
-        int upperBound = F_SPECIES.loopBound(size);
-        for (int i = 0; i < upperBound; i += F_SPECIES.length()) {
-            FloatVector thatVector = that.getFloatVector(F_SPECIES, thatOffset + i);
-            ShortVector bits16 = ShortVector.fromMemorySegment(S_SPECIES_HALF, thiz.memorySegment, (thisOffset + i) * (long) GGMLType.FLOAT16_BYTES, ByteOrder.LITTLE_ENDIAN);
-
-            var bits32 = bits16.castShape(I_SPECIES, 0).reinterpretAsInts(); // (int) bits16
-            // Does not support infinities nor NaNs, preserves sign, emulate DAZ (denormals-are-zero).
-            // Expects well-formed float16 values only (e.g. model weights).
-            // Fast Float16 to Float32 Conversion:
-            //
-            // ┌─[15]─┬─[14]───···───[10]─┬─[9]────····────[0]─┐
-            // │ Sign │ Exponent (5 bits) │ Mantissa (10 bits) │ Float16 Layout (16 bits)
-            // └──────┴───────────────────┴────────────────────┘
-            //    │             │                    │
-            //    ▼             ▼                    ▼
-            // ┌─[31]─┬─[30]───···───[23]─┬─[22]────···────[0]─┐
-            // │ Sign │ Exponent (8 bits) │ Mantissa (23 bits) │ Float32 Layout (32 bits)
-            // └──────┴───────────────────┴────────────────────┘
-            //
-            // Shifts and adjustments:
-            // - Sign:       float16[15] -> float32[31] (shift 16 bits up)
-            // - Exponent:   float16[10-14] -> float32[23-30] (+ bias adjustment)
-            // - Mantissa:   float16[0-9] -> float32[13-22] (shift 13 bits up)
-            //
-            // exp = bits32 & 0x7C00
-            // zeroExponentMask = exp == 0 ? 0 : ~0
-            var zeroExponentMask = bits32.and(0x7C00).neg().lanewise(VectorOperators.ASHR, 31); // = (-exp) >> 31
-            bits32 = bits32.and(0x8000).lanewise(VectorOperators.LSHL, 16) // sign
-                    .or(
-                            // exponent and mantissa combined
-                            bits32.and(0x7FFF).add(0x1C000).lanewise(VectorOperators.LSHL, 13)
-                                    .and(zeroExponentMask) // -0, +0 and DAZ (denormals-are-zero)
-
-                    );
-
-            FloatVector thizVector = bits32.reinterpretAsFloats(); // Float.intBitsToFloat(vi)
-            val = thizVector.fma(thatVector, val);
-        }
-        float result = val.reduceLanes(VectorOperators.ADD);
-        // Remaining entries.
-        if (upperBound < size) {
-            result += scalarDot(thiz, thisOffset + upperBound, that, thatOffset + upperBound, size - upperBound);
-        }
-
-        return result;
-    }
-
-	@Override
-	public void writeExternal(ObjectOutput out) throws IOException {
-		out.writeInt(size);
-		out.writeLong(memorySegment.byteSize());
-		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
-	}
-
-	@Override
-	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		size = in.readInt();
-		long bs = in.readLong();
-		memorySegment = Arena.ofAuto().allocate(bs, 1);
-		for(int i = 0; i < bs; i++)
-			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
-	}
-
-	@Override
-	public int compareTo(Object o) {
-		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			byte b;
-			if(i >= ((F16FloatTensor)o).memorySegment.byteSize())
-				return 1;
-			else
-				b = ((F16FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
-				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
-				return -1;
-		}
-		return 0;
-	}
-}
-
-final class F32FloatTensor extends FloatTensor implements Externalizable, Comparable {
-	private static final long serialVersionUID = -1L;
-
-	int size;
-	transient MemorySegment memorySegment;
-	
-	public F32FloatTensor() {}
-	
-	public F32FloatTensor(int size, MemorySegment memorySegment) {
-		this.size = size;
-		this.memorySegment = memorySegment;
-	}
-
-	@Override
-	int size() {
-		return size;
-	}
-
-	@Override
-	float getFloat(int index) {
-		assert 0 <= index && index < size;
-		return readFloat(memorySegment, index * 4);
-	}
-
-	@Override
-	void setFloat(int index, float value) {
-		throw new UnsupportedOperationException("setFloat");	
-	}
-
-	@Override
-	FloatVector getFloatVector(VectorSpecies<Float> species, int offset) {
-		 throw new UnsupportedOperationException("getFloatVector");
-	}
-
-	@Override
-	GGMLType type() {
-		return GGMLType.F32;
-	}
-
-	@Override
-	public void writeExternal(ObjectOutput out) throws IOException {
-		out.writeInt(size);
-		out.writeLong(memorySegment.byteSize());
-		out.write(memorySegment.toArray(ValueLayout.JAVA_BYTE));
-	}
-
-	@Override
-	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		size = in.readInt();
-		long bs = in.readLong();
-		memorySegment = Arena.ofAuto().allocate(bs, 1);
-		for(int i = 0; i < bs; i++)
-			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
-	}
-
-	@Override
-	public int compareTo(Object o) {
-		for(int i = 0; i < memorySegment.byteSize(); i++) {
-			byte b;
-			if(i >= ((F32FloatTensor)o).memorySegment.byteSize())
-				return 1;
-			else
-				b = ((F32FloatTensor)o).memorySegment.get(ValueLayout.JAVA_BYTE, i);
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) > b)
-				return 1;
-			if(memorySegment.get(ValueLayout.JAVA_BYTE,i) < b)
-				return -1;
-		}
-		return 0;
-	}
-}
-
-final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comparable {
-
-    float[] values;
-    
-    public ArrayFloatTensor() {}
-    
-    ArrayFloatTensor(float[] values) {
-        this.values = values;
-    }
-
-    public static FloatTensor allocate(int... dims) {
-        int numberOfElements = FloatTensor.numberOfElements(dims);
-        return new ArrayFloatTensor(new float[numberOfElements]);
-    }
-
-    @Override
-    public int size() {
-        return values.length;
-    }
-
-    @Override
-    public float getFloat(int index) {
-        return values[index];
-    }
-
-    @Override
-    public void setFloat(int index, float value) {
-        values[index] = value;
-    }
-
-    @Override
-    public GGMLType type() {
-        return GGMLType.F32;
-    }
-
-    @Override
-    public FloatTensor fillInPlace(int thisOffset, int size, float value) {
-        Arrays.fill(values, thisOffset, thisOffset + size, value);
-        return this;
-    }
-
-    @Override
-    public FloatVector getFloatVector(VectorSpecies<Float> species, int index) {
-        if (!USE_VECTOR_API) {
-            throw new UnsupportedOperationException();
-        }
-        return FloatVector.fromArray(species, values, index);
-    }
-    
-	@Override
-	public void writeExternal(ObjectOutput out) throws IOException {
-		out.writeInt(values.length);
-		for(float v: values)
-			out.writeFloat(v);	
-	}
-
-	@Override
-	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
-		int vsize = in.readInt();
-		values = new float[vsize];
-		for(int i = 0; i < vsize; i++)
-			values[i]= in.readFloat();
-	}
-
-	@Override
-	public int compareTo(Object o) {
-		return Arrays.compare(values,((ArrayFloatTensor)o).values);
-	}
-}
-
 final class RoPE {
 	/**
 	 * For GPT2 vocab
@@ -3489,7 +2530,6 @@ record Vocabulary(String[] tokens, float[] scores, Map<String, Integer> tokenToI
 @FunctionalInterface
 interface Sampler {
     int sampleToken(FloatTensor logits);
-
     Sampler ARGMAX = FloatTensor::argmax;
 }
 
