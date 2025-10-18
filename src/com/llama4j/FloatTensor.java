@@ -17,7 +17,8 @@ import jdk.incubator.vector.VectorSpecies;
  * e.g. can represent a sequence of quantized floats.
  */
 abstract class FloatTensor implements Externalizable, Comparable {
-	public static boolean DEBUG = true;
+	public static boolean DEBUG = false;
+	static final boolean USE_CUDA = true;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
 

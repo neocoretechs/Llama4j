@@ -9,6 +9,8 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 
+import com.neocoretechs.cublas.Gemm;
+
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorOperators;
@@ -62,13 +64,30 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
 
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        if (FloatTensor.USE_VECTOR_API) {
-            return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-        } else {
-            return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-        }
+    	if(FloatTensor.USE_CUDA) {
+    		return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    	} else
+    		if (FloatTensor.USE_VECTOR_API) {
+    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		} else {
+    			return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+    		}
     }
+    
+    public float cuBLASdot(int thisOffset, FloatTensor that, int thatOffset, int size) {
+    	// 1. Export both slices into float[]
+    	float[] a = this.exportSlice(new float[size], 0, thisOffset, size);
+    	float[] b = that.exportSlice(new float[size], 0, thatOffset, size);
 
+    	// 2. Prepare result buffer
+    	float[] r = new float[1];
+
+    	int rc = Gemm.sdot(Llama3.cublasHandle, size, a, 1, b, 1, r);
+    	if (rc != 0) throw new RuntimeException("JNI error " + rc);
+
+    	return r[0];
+    }
+    
     private static float vectorDot(Q8_0FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {
         float result = 0f;
         int j = 0;
@@ -205,8 +224,14 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
 		return dst;
 	}
 	final class Q8_0SliceView implements FloatSliceView {
-		final MemorySegment seg; final int base; final int len;
-		Q8_0SliceView(MemorySegment seg, int base, int len){ this.seg=seg; this.base=base; this.len=len; }
+		final MemorySegment seg; 
+		final int base; 
+		final int len;
+		Q8_0SliceView(MemorySegment seg, int base, int len) { 
+			this.seg=seg;
+			this.base=base; 
+			this.len=len; 
+		}
 		public int length() { 
 			return len; 
 		}

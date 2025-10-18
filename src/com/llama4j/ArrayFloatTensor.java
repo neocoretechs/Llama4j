@@ -10,7 +10,7 @@ import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
 
 final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comparable {
-	public static boolean DEBUG = true;
+	public static boolean DEBUG = false;
     float[] values;
     
     public ArrayFloatTensor() {}

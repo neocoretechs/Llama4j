@@ -20,23 +20,15 @@
 // Enjoy!
 package com.llama4j;
 
-import jdk.incubator.vector.*;
-
 import java.io.BufferedWriter;
-import java.io.Externalizable;
-import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.ObjectInput;
-import java.io.ObjectOutput;
+
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
-import java.lang.reflect.Field;
-import java.net.MalformedURLException;
-import java.net.URL;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -53,8 +45,8 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.atomic.DoubleAdder;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
 import java.util.function.LongConsumer;
@@ -66,7 +58,6 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
-import java.security.InvalidParameterException;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -1504,7 +1495,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         final float finalss = ss; // for the lambda
         out.mapWithIndexInPlace(0, size, (value, index) -> weight.get(index) * (finalss * x.getFloat(index)));
     }
-
+    
     static FloatTensor forward(Llama model, State state, int[] tokens, int position, boolean computeLogits) {
         // a few convenience variables
         Configuration config = model.configuration();
@@ -1565,8 +1556,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 return null;
             }
 
-            // multihead attention. iterate over all heads
-            /*
+            // multihead attention. iterate over all heads       
             Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
                 int token = (int) (ht / config.numberOfHeads);
                 int h = (int) (ht % config.numberOfHeads);
@@ -1604,9 +1594,10 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
                 }
             });
-            */
+            
 
             // CUBLAS version of above parallel loop
+            /*
             Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
                 final int token = (int) (ht / config.numberOfHeads);
                 final int h     = (int) (ht % config.numberOfHeads);
@@ -1623,7 +1614,6 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 // One query vector for this head (1 x headSize), reused across all t.
                 // Per head:
                 final float[] qVec = state.q[token].exportSlicePooled(Llama3.poolHead, qOffset, headSize);
-                System.out.println("qVec="+(qVec != null ? qVec.length : " qVec null!"));
                 for (int t = 0; t < T; t++) {
                     final int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
                     final float[] kVec = state.keyCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
@@ -1631,10 +1621,19 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     keys.add(kVec);
                     results.add(Llama3.poolScalar.acquire(1));
                 }
-                System.out.println("queries="+(queries != null ? queries.size() : " queries null!"));
-                System.out.println("keys="+(keys != null ? keys.size() : " keys null!"));
-                System.out.println("results="+(results != null ? results.size() : " reuslts null!"));
-                Gemm.matrixDotProductFBatch(Llama3.cublasHandle, 1, headSize, queries, headSize, 1, keys, results, T);
+                if(Llama3.DEBUG) {
+                	long[] mem = Gemm.cudaMemGetInfo();
+                	System.out.println(Thread.currentThread().getName()+" queries="+(queries != null ? queries.size() : " queries null!")+
+                			" keys="+(keys != null ? keys.size() : " keys null!")+
+                			" results="+(results != null ? results.size() : " results null!")+" headSize="+headSize+" resultSize="+T+" mem free:"+mem[0]+" total:"+mem[1]);
+                }
+                AtomicInteger retCode = new AtomicInteger();
+                // rows, columns, array, rows, columns, array, results, length 
+                //retCode.set(Gemm.matrixDotProductFBatch(Llama3.cublasHandle, 1, headSize, queries, headSize, 1, keys, results, T));
+                retCode.set(Gemm.matrixDotProductF16Batch(Llama3.cublasHandle, 1, headSize, queries, headSize, 1, keys, results, T));
+                if(retCode.get() != 0) {
+    				throw new RuntimeException("matrixDotProductFBatch returned JNI error code"+retCode.get());
+    			}
                 // 3) Write attention scores and apply scaling
                 for (int t = 0; t < T; t++) {
                     final float score = results.get(t)[0] / sqrtHeadSize;
@@ -1653,8 +1652,45 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 for (float[] k : keys) Llama3.poolHead.release(k);
                 for (float[] r : results) Llama3.poolScalar.release(r);
             });
-            //---end CUBLAS version
+            //---end CUBLAS version*/
             
+            //-------
+            /*
+		// scratch arrays reused for each slice
+		float[] scratchQ = new float[Tq * D];
+		float[] scratchK = new float[Tk * D];
+		float[] scratchV = new float[Tk * D];
+		for(int b = 0; b < B; b++) {
+    		for (int h = 0; h < H; h++) {
+        		int idx = b * H + h;
+        		// fill scratch arrays with data for this head
+        		fillQSlice(scratchQ, b, h);
+        		fillKSlice(scratchK, b, h);
+        		fillVSlice(scratchV, b, h);
+        		// compute offsets into device buffers
+        		long qOffset = (long) idx * (Tq * D);
+        		long kOffset = (long) idx * (Tk * D);
+        		long vOffset = (long) idx * (Tk * D);
+        		// upload slices into resident device buffers
+        		Attn.uploadSlice(ctx, scratchQ, ctx.dQ, qOffset, Tq * D);
+        		Attn.uploadSlice(ctx, scratchK, ctx.dK, kOffset, Tk * D);
+        		Attn.uploadSlice(ctx, scratchV, ctx.dV, vOffset, Tk * D);
+    		}
+		}
+ 		// Once all Q/K/V slices are staged, launch the batched GEMMs
+		// Q·Kᵀ → S
+		Attn.scores(ctx, B * H, Tq, Tk, D);
+		// Apply scale/mask/softmax on GPU (JNI kernel call)
+		Attn.applyScaleMaskSoftmax(ctx, 1.0f / (float)Math.sqrt(D), B * H, Tq, Tk);
+		// S·V → O
+		Attn.output(ctx, B * H, Tq, Tk, D);
+		// Optionally download O if host needs it
+		float[] out = new float[B * H * Tq * D];
+		Attn.downloadO(ctx, out, B * H, Tq, D);
+		// Update att/xb/valuecache from O
+		updateState(out);
+             */
+             
             // final matmul to get the output of the attention
             weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, dim);
 
