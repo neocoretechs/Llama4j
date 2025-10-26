@@ -72,14 +72,15 @@ import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
 
 import com.neocoretechs.rocksack.Alias;
-
+import com.neocoretechs.cublas.AttentionRunner;
 import com.neocoretechs.cublas.Gemm;
+import com.neocoretechs.cublas.Attn;
 
 public class Llama3 {
 	private static final Log log = LogFactory.getLog(Llama3.class);
     // Batch-size used in prompt evaluation.
     private static int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
-    public final static boolean DEBUG = false;
+    public final static boolean DEBUG = true;
     public final static boolean DISPLAY_METADATA = true;
     public static AsynchRelatrixClientTransaction dbClient = null;
     public static TransactionId xid = null;
@@ -1555,7 +1556,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 state.idxPrevBlock = nTokens - 1;
                 return null;
             }
-
+            /*
             // multihead attention. iterate over all heads       
             Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
                 int token = (int) (ht / config.numberOfHeads);
@@ -1594,11 +1595,60 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
                 }
             });
+            */
+            int heads = config.numberOfHeads;
+            int d = headSize;
+            final int H = heads;
+            final int D = d;
+            final int TQ = nTokens;
+            final int TK = position + nTokens; // fixed context horizon for this batch
+            // Prepare inputs (fill with your model-projected Q/K/V)
+            float[] Q = new float[H * TQ * D];
+            float[] K = new float[H * TK * D];
+            float[] V = new float[H * TK * D];
+            // Pack Q: per token, per head
+            for (int t = 0; t < TQ; t++) {
+            	for (int h = 0; h < H; h++) {
+            		int qOffset = h * headSize;
+            		float[] qVec = state.q[t].exportSlicePooled(Llama3.poolHead, qOffset, headSize);
+            		int dst = h * (TQ * D) + t * D;
+            		System.arraycopy(qVec, 0, Q, dst, D);
+            	}
+            }
+            // Pack K/V from cache across time 0..TK-1 (or your window start..end)
+            for(int u = 0; u < TK; u++) {
+            	for(int h = 0; h < H; h++) {
+            		int kvHeadBase = (h / kvMul) * headSize; // shared KV head group
+            		int keyCacheOffset = u * kvDim + kvHeadBase;
+            		float[] kVec = state.keyCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
+            		float[] vVec = state.valueCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
+            		int kd = h * (TK * D) + u * D;
+            		System.arraycopy(kVec, 0, K, kd, D);
+            		System.arraycopy(vVec, 0, V, kd, D);
+            	}
+            }
+            Attn ctx = new Attn(/*maxB=*/1, heads, TQ, TK, d);
+            AttentionRunner.Config cfg = new AttentionRunner.Config(heads, d, TQ, TK);
+            float[] O = AttentionRunner.run(ctx, cfg, Q, K, V);
+  
+            // Scatter O back into state.xb per token
+            for(int t = 0; t < TQ; t++) {
+            	int base = t * heads * d;
+            	int stride = heads * d;
+            	for(int j = 0; j < stride; j++) {
+            	   state.xb[t].setFloat(j, O[base + j]);
+            	}
+            }
+            // Continue with wo, residual, FFN...
+            if(Llama3.DEBUG) {
+            		long[] mem = Gemm.cudaMemGetInfo();
+            		System.out.println(Thread.currentThread().getName()+" queries="+(Q != null ? Q.length : " queries null!")+
+            			" keys="+(K != null ? K.length : " keys null!")+
+            			" values="+(V != null ? V.length : " values null!")+" headSize="+headSize+" mem free:"+mem[0]+" total:"+mem[1]);
+            }
             
-
-            // CUBLAS version of above parallel loop
-            /*
-            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+            // CUBLAS version of above parallel loop      
+            /*Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
                 final int token = (int) (ht / config.numberOfHeads);
                 final int h     = (int) (ht % config.numberOfHeads);
                 // Offsets for this head
@@ -1653,44 +1703,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 for (float[] r : results) Llama3.poolScalar.release(r);
             });
             //---end CUBLAS version*/
-            
-            //-------
-            /*
-		// scratch arrays reused for each slice
-		float[] scratchQ = new float[Tq * D];
-		float[] scratchK = new float[Tk * D];
-		float[] scratchV = new float[Tk * D];
-		for(int b = 0; b < B; b++) {
-    		for (int h = 0; h < H; h++) {
-        		int idx = b * H + h;
-        		// fill scratch arrays with data for this head
-        		fillQSlice(scratchQ, b, h);
-        		fillKSlice(scratchK, b, h);
-        		fillVSlice(scratchV, b, h);
-        		// compute offsets into device buffers
-        		long qOffset = (long) idx * (Tq * D);
-        		long kOffset = (long) idx * (Tk * D);
-        		long vOffset = (long) idx * (Tk * D);
-        		// upload slices into resident device buffers
-        		Attn.uploadSlice(ctx, scratchQ, ctx.dQ, qOffset, Tq * D);
-        		Attn.uploadSlice(ctx, scratchK, ctx.dK, kOffset, Tk * D);
-        		Attn.uploadSlice(ctx, scratchV, ctx.dV, vOffset, Tk * D);
-    		}
-		}
- 		// Once all Q/K/V slices are staged, launch the batched GEMMs
-		// Q·Kᵀ → S
-		Attn.scores(ctx, B * H, Tq, Tk, D);
-		// Apply scale/mask/softmax on GPU (JNI kernel call)
-		Attn.applyScaleMaskSoftmax(ctx, 1.0f / (float)Math.sqrt(D), B * H, Tq, Tk);
-		// S·V → O
-		Attn.output(ctx, B * H, Tq, Tk, D);
-		// Optionally download O if host needs it
-		float[] out = new float[B * H * Tq * D];
-		Attn.downloadO(ctx, out, B * H, Tq, D);
-		// Update att/xb/valuecache from O
-		updateState(out);
-             */
-             
+        
             // final matmul to get the output of the attention
             weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, dim);
 
