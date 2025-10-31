@@ -7,7 +7,11 @@ import java.io.ObjectOutput;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+
+import com.neocoretechs.cublas.DeviceBuffer;
+import com.neocoretechs.cublas.Gemm;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.ShortVector;
@@ -19,16 +23,20 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
 
     int size;
     transient MemorySegment memorySegment;
+	private final transient DeviceBuffer device;      // device residency
     
-    public BF16FloatTensor() {}
+    public BF16FloatTensor() {
+    	this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.BF16.getBlockSize(), GGMLType.BF16.getTypeSize(), GGMLType.BFLOAT16_BYTES, DeviceBuffer.GGUFQ.BF16.ordinal());
+    }
     
     public BF16FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
+    	this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.BF16.getBlockSize(), GGMLType.BF16.getTypeSize(), GGMLType.BFLOAT16_BYTES, DeviceBuffer.GGUFQ.BF16.ordinal());
     }
 
     @Override
-    int size() {
+    public int size() {
         return size;
     }
 
@@ -56,14 +64,20 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
     private float bfloat16ToFloat(short bfloat16) {
         return Float.intBitsToFloat(bfloat16 << 16);
     }
-
+    
+    public long devicePtr() { return device.devicePtr; }
+    
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        if (FloatTensor.USE_VECTOR_API) {
-            return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-        } else {
-            return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-        }
+    	if(FloatTensor.USE_CUDA) {
+    		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    	} else
+    		if (FloatTensor.USE_VECTOR_API) {
+    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		} else {
+    			return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+    		}
     }
 
     private static float vectorDot(BF16FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {

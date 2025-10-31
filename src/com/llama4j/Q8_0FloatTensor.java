@@ -7,8 +7,10 @@ import java.io.ObjectOutput;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
+import com.neocoretechs.cublas.DeviceBuffer;
 import com.neocoretechs.cublas.Gemm;
 
 import jdk.incubator.vector.ByteVector;
@@ -18,19 +20,23 @@ import jdk.incubator.vector.VectorSpecies;
 
 final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	private static final long serialVersionUID = -1L;
-
+	private final transient DeviceBuffer device;      // device residency
+	
 	int size;
     transient MemorySegment memorySegment;
 
-    public Q8_0FloatTensor() {}
+    public Q8_0FloatTensor() {
+        this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.Q8_0.getBlockSize(), GGMLType.Q8_0.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.Q8_0.ordinal());
+    }
     
     public Q8_0FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
+        this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.Q8_0.getBlockSize(), GGMLType.Q8_0.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.Q8_0.ordinal());
     }
 
     @Override
-    int size() {
+    public int size() {
         return size;
     }
 
@@ -65,29 +71,50 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {
-    		return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    	} else
+    		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		device.upload();
+    		return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    	} else {
+    		device.upload(); // TEST --remove!!!
     		if (FloatTensor.USE_VECTOR_API) {
     			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		} else {
     			return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
     		}
+    	}
     }
-    
+    /**
+     * dot product using GPU
+     * @param thisOffset
+     * @param that
+     * @param thatOffset
+     * @param size
+     * @return
+     */
     public float cuBLASdot(int thisOffset, FloatTensor that, int thatOffset, int size) {
     	// 1. Export both slices into float[]
     	float[] a = this.exportSlice(new float[size], 0, thisOffset, size);
     	float[] b = that.exportSlice(new float[size], 0, thatOffset, size);
-
     	// 2. Prepare result buffer
     	float[] r = new float[1];
-
     	int rc = Gemm.sdot(Llama3.cublasHandle, size, a, 1, b, 1, r);
     	if (rc != 0) throw new RuntimeException("JNI error " + rc);
-
     	return r[0];
     }
+
     
+    @Override
+    public long devicePtr() { return device.devicePtr; }
+
+    /**
+     * dot product using vector extensions
+     * @param thiz
+     * @param thisOffset
+     * @param that
+     * @param thatOffset
+     * @param size
+     * @return
+     */
     private static float vectorDot(Q8_0FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {
         float result = 0f;
         int j = 0;

@@ -46,7 +46,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
 import java.util.function.LongConsumer;
@@ -80,7 +80,7 @@ public class Llama3 {
 	private static final Log log = LogFactory.getLog(Llama3.class);
     // Batch-size used in prompt evaluation.
     private static int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
-    public final static boolean DEBUG = true;
+    public final static boolean DEBUG = false;
     public final static boolean DISPLAY_METADATA = true;
     public static AsynchRelatrixClientTransaction dbClient = null;
     public static TransactionId xid = null;
@@ -1330,7 +1330,9 @@ final class ModelLoader {
 }
 
 record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights weights) {
-    public State createNewState(int batchsize, int beginOfText) {
+    private static boolean DEBUG = false;;
+
+	public State createNewState(int batchsize, int beginOfText) {
         State state = new State(configuration(), batchsize);
         state.latestToken = beginOfText; // was tokenizer.getSpecialTokens().get("<|begin_of_text|>");, now we get from ChatFormat.beginOfText() which does the same
         return state;
@@ -1521,12 +1523,13 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             Parallel.parallelFor(0, nTokens, t ->
                 rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight[curLayer], dim, config.rmsNormEps)
             );
-
+    		//try (Timer timer = Timer.log("qkv matmuls layer:"+l,TimeUnit.MICROSECONDS)) {
             // qkv matmuls for this position
             weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
             weights.wk[l].matmul(nTokens, state.xb, state.k, kvDim, dim);
             weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);
-
+    		//}
+    		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
             // RoPE relative positional encoding: complex-valued rotate q and k in each head
             Parallel.parallelFor(0, nTokens, t -> {
                 for (int i = 0; i < dim; i += 2) {
@@ -1543,21 +1546,55 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     }
                 }
             });
-
+    		//}
+    		//try (Timer timer = Timer.log("Save kv layer:"+l,TimeUnit.MICROSECONDS)) {
             // save key,value at this time step (position) to our kv cache
             //int loff = l * config.seq_len * kvDim; // kv cache layer offset for convenience
             Parallel.parallelFor(0, nTokens, t -> {
                 state.k[t].copyTo(0, state.keyCache[curLayer], (position + t) * kvDim, kvDim);
                 state.v[t].copyTo(0, state.valueCache[curLayer], (position + t) * kvDim, kvDim);
             });
-
+    		//}
             // If the logits are not required, the attention and FFN of the last layer can be skipped entirely.
             if (!computeLogits && curLayer == config.numberOfLayers - 1) {
                 state.idxPrevBlock = nTokens - 1;
                 return null;
             }
-            /*
-            // multihead attention. iterate over all heads       
+            //
+            //----- GPU multihead attention. iterate over all heads 
+            //List<CompletableFuture<Void>> gpuQueue = new ArrayList<>();
+            /*int totalHeads = nTokens * config.numberOfHeads;
+            int hiddenSize = 4096;                  // from model config
+            int H = state.q.length;                 // number of heads
+            int d = hiddenSize / H;                 // per-head width (e.g. 4096/32 = 128)
+
+            // infer how many rows (tokens) are in each head tensor
+            int rowsQ = state.q[0].size() / d;
+            int rowsK = state.k[0].size() / d;
+            int rowsV = state.v[0].size() / d;
+            // for a single-step test, you’ll see rowsQ = rowsK = rowsV = 1
+            int Tq = 512;//rowsQ;
+            int Tk = 512;//rowsK;
+            if(DEBUG )
+            	System.out.printf("Attn: Tq=%d, Tk=%d, d=%d, H=%d%n", Tq, Tk, d, H);
+            Attn attn = new Attn(Llama3.cublasHandle, Tq, Tk, d, H);
+            try {
+                attn.packHeads(state.q, state.k, state.v);
+                int rc = attn.attention();
+                if (rc != 0) {
+                    throw new RuntimeException("attentionBatchedHeads rc=" + rc);
+                }
+                attn.unpackHeads(state.xb);
+            } finally {
+                attn.close();
+            }
+            //float[] f = new float[state.xb[0].size()];
+            //state.xb[0].exportSlice(f, 0, 0, state.xb[0].size());
+            //System.out.println("layer:"+l+"="+Arrays.toString(f));
+            */
+            
+            // original multihead attention. iterate over all heads
+      		//try (Timer timer = Timer.log("CPU Multihead Attn layer:"+l,TimeUnit.MICROSECONDS)) {
             Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
                 int token = (int) (ht / config.numberOfHeads);
                 int h = (int) (ht % config.numberOfHeads);
@@ -1595,7 +1632,10 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
                 }
             });
-            */
+      		//}
+            //----end original multihead attention
+            
+            /*---attempted bulk processing attention
             int heads = config.numberOfHeads;
             int d = headSize;
             final int H = heads;
@@ -1627,9 +1667,9 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             		System.arraycopy(vVec, 0, V, kd, D);
             	}
             }
-            Attn ctx = new Attn(/*maxB=*/1, heads, TQ, TK, d);
+            Attn ctx = new Attn(Llama3.cublasHandle, 1, heads, TQ, TK, d);
             AttentionRunner.Config cfg = new AttentionRunner.Config(heads, d, TQ, TK);
-            float[] O = AttentionRunner.run(ctx, cfg, Q, K, V);
+            float[] O = AttentionRunner.run(Llama3.cublasHandle, ctx, cfg, Q, K, V);
   
             // Scatter O back into state.xb per token
             for(int t = 0; t < TQ; t++) {
@@ -1639,6 +1679,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             	   state.xb[t].setFloat(j, O[base + j]);
             	}
             }
+            ctx.close();
+            
             // Continue with wo, residual, FFN...
             if(Llama3.DEBUG) {
             		long[] mem = Gemm.cudaMemGetInfo();
@@ -1646,9 +1688,13 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             			" keys="+(K != null ? K.length : " keys null!")+
             			" values="+(V != null ? V.length : " values null!")+" headSize="+headSize+" mem free:"+mem[0]+" total:"+mem[1]);
             }
+    		System.out.println(">>>Layer:"+l+" queries="+(Q != null ? Q.length : " queries null!")+
+        			" keys="+(K != null ? K.length : " keys null!")+
+        			" values="+(V != null ? V.length : " values null!")+" headSize="+headSize);
+        	---end attempted bulk multihead attention*/
             
-            // CUBLAS version of above parallel loop      
-            /*Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+            /*System.out.println("Parallel matmul print start:");
+            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
                 final int token = (int) (ht / config.numberOfHeads);
                 final int h     = (int) (ht % config.numberOfHeads);
                 // Offsets for this head
@@ -1656,13 +1702,37 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 final int attOffset = h * config.contextLength;
                 // Time horizon for this token (inclusive of current position)
                 final int T = position + token + 1;
-                // 1) Build batched inputs: same query across all timesteps, different key per timestep.
-                // IMPORTANT: avoid hot-path allocations; use pooled or zero-copy views if available.
+                System.out.println(Thread.currentThread().getName()+"| (T, token, h, qOffset, attOffset) T="+T+" token="+token+" h="+h+" qOffset="+qOffset+" attOffset="+attOffset);
+                for (int t = 0; t < T; t++) {
+                    final int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
+                    //System.out.println(Thread.currentThread().getName()+"|t loop (curLayer, keyCacheOffset, headSize) - float[] kVec = state.keyCache["+curLayer+"].exportSlicePooled(Llama3.poolHead,"+ keyCacheOffset+","+ headSize+")");
+                }
+                // 4) Weighted sum over values → xb
+                final int xbOffset = h * headSize;
+                for (int t = 0; t < T; t++) {
+                    final int vOffset = t * kvDim + (h / kvMul) * headSize;
+                    //System.out.println(Thread.currentThread().getName()+"|t loop (token, attOffset, t) float a = state.att["+token+"].getFloat("+(attOffset + t)+")");
+                    //System.out.println(Thread.currentThread().getName()+"|t loop (token xbOffset, curLayer, vOffset, headSize) state.xb["+token+"].saxpyInPlace("+xbOffset+",state.valueCache["+curLayer+"],("+vOffset+","+ headSize+", a)");
+                }
+ 
+            });
+            System.out.println("Parallel matmul print end");*/
+            
+   
+            // CUBLAS version of above parallel loop
+            /*
+            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+                final int token = (int) (ht / config.numberOfHeads);
+                final int h     = (int) (ht % config.numberOfHeads);
+                // Offsets for this head
+                final int qOffset   = h * headSize;
+                final int attOffset = h * config.contextLength;
+                // Time horizon for this token (inclusive of current position)
+                final int T = position + token + 1;
                 final ArrayList<float[]> queries = new ArrayList<>(T);
                 final ArrayList<float[]> keys    = new ArrayList<>(T);
                 final ArrayList<float[]> results = new ArrayList<>(T);
-                // One query vector for this head (1 x headSize), reused across all t.
-                // Per head:
+
                 final float[] qVec = state.q[token].exportSlicePooled(Llama3.poolHead, qOffset, headSize);
                 for (int t = 0; t < T; t++) {
                     final int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
@@ -1678,14 +1748,13 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 			" results="+(results != null ? results.size() : " results null!")+" headSize="+headSize+" resultSize="+T+" mem free:"+mem[0]+" total:"+mem[1]);
                 }
                 AtomicInteger retCode = new AtomicInteger();
-                // rows, columns, array, rows, columns, array, results, length 
-                //retCode.set(Gemm.matrixDotProductFBatch(Llama3.cublasHandle, 1, headSize, queries, headSize, 1, keys, results, T));
                 retCode.set(Gemm.matrixDotProductF16Batch(Llama3.cublasHandle, 1, headSize, queries, headSize, 1, keys, results, T));
                 if(retCode.get() != 0) {
     				throw new RuntimeException("matrixDotProductFBatch returned JNI error code"+retCode.get());
     			}
                 // 3) Write attention scores and apply scaling
                 for (int t = 0; t < T; t++) {
+                	//System.out.println("Results "+t+"+.)="+Arrays.toString(results.get(t)));
                     final float score = results.get(t)[0] / sqrtHeadSize;
                     state.att[token].setFloat(attOffset + t, score);
                 }
@@ -1703,45 +1772,117 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 for (float[] r : results) Llama3.poolScalar.release(r);
             });
             //---end CUBLAS version*/
-        
+      		
+            // CUBLAS version of above parallel loop with bigger batch 
+            /*AtomicInteger TT = new AtomicInteger(0);
+            final List<float[]> queries = Collections.synchronizedList(new ArrayList<float[]>());
+            final List<float[]> keys    = Collections.synchronizedList(new ArrayList<float[]>());
+            final List<float[]> results = Collections.synchronizedList(new ArrayList<float[]>());
+            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+                final int token = (int) (ht / config.numberOfHeads);
+                final int h     = (int) (ht % config.numberOfHeads);
+                // Offsets for this head
+                final int qOffset   = h * headSize;
+                final int attOffset = h * config.contextLength;
+                // Time horizon for this token (inclusive of current position)
+                final int T = position + token + 1;
+                TT.getAndAdd(T);
+                final float[] qVec = state.q[token].exportSlicePooled(Llama3.poolHead, qOffset, headSize);
+                for (int t = 0; t < T; t++) {
+                    final int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
+                    final float[] kVec = state.keyCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
+                    queries.add(qVec);
+                    keys.add(kVec);
+                    results.add(Llama3.poolScalar.acquire(1));
+                }
+                if(Llama3.DEBUG) {
+                	long[] mem = Gemm.cudaMemGetInfo();
+                	System.out.println(Thread.currentThread().getName()+" queries="+(queries != null ? queries.size() : " queries null!")+
+                			" keys="+(keys != null ? keys.size() : " keys null!")+
+                			" results="+(results != null ? results.size() : " results null!")+" headSize="+headSize+" resultSize="+T+" mem free:"+mem[0]+" total:"+mem[1]);
+                }
+            });
+            AtomicInteger retCode = new AtomicInteger();
+            FloatBuffer fb1 = FloatBuffer.;  
+            ArrayList<float[]> ql = new ArrayList<>(queries);
+            ArrayList<float[]> kl = new ArrayList<>(keys);
+            ArrayList<float[]> rl = new ArrayList<>(results);
+            //System.out.println("Q="+ql.size()+" K="+kl.size()+" R="+rl.size());
+            retCode.set(Gemm.matrixDotProductF(Llama3.cublasHandle, 1, headSize, ql, headSize, 1, kl, rl));
+            if(retCode.get() != 0) {
+            	throw new RuntimeException("matrixDotProductFBatch returned JNI error code"+retCode.get());
+            }
+            for(float[] q : queries) Llama3.poolHead.release(q);
+            for(float[] k : keys) Llama3.poolHead.release(k);
+            //System.out.println("TT = "+TT.get());
+            for(float[] rll: rl)
+            	System.out.println(Arrays.toString(rll));
+            List<float[]> rl2 = Collections.synchronizedList(rl);
+            //Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+            for(long ht = 0; ht < (long) nTokens * (long) config.numberOfHeads; ht++) {
+                final int token = (int) (ht / config.numberOfHeads);
+                final int h     = (int) (ht % config.numberOfHeads);
+                // Offsets for this head
+                final int attOffset = h * config.contextLength;
+                // Time horizon for this token (inclusive of current position)
+                final int T = position + token + 1;
+                // 3) Write attention scores and apply scaling
+                for (int t = 0; t < T; t++) {
+                	//System.out.println("Results "+t+"+.)="+Arrays.toString(results.get(t)));
+                    final float score = rl2.get(t)[0] / sqrtHeadSize;
+                    state.att[token].setFloat(attOffset + t, score);
+                }
+                state.att[token].softmaxInPlace(attOffset, T);
+                // 4) Weighted sum over values → xb
+                final int xbOffset = h * headSize;
+                state.xb[token].fillInPlace(xbOffset, headSize, 0f);
+                for (int t = 0; t < T; t++) {
+                    final int vOffset = t * kvDim + (h / kvMul) * headSize;
+                    final float a = state.att[token].getFloat(attOffset + t);
+                    state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
+                }
+            //});
+            }
+            for(float[] r : results) Llama3.poolScalar.release(r);
+            //---end CUBLAS version with bigger batch*/
+      		
+    		//try (Timer timer = Timer.log("Final matmul and residual connection layer:"+l,TimeUnit.MICROSECONDS)) {
             // final matmul to get the output of the attention
             weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, dim);
-
             // residual connection back into x
             Parallel.parallelFor(0, nTokens, t -> {
                 state.x[t].addInPlace(state.xb2[t]);
             });
-
+    		//}
+    		//try (Timer timer = Timer.log("FFN RMSNorm layer:"+l,TimeUnit.MICROSECONDS)) {
             // ffn rmsnorm
             Parallel.parallelFor(0, nTokens, t -> {
                 rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight[curLayer], dim, config.rmsNormEps);
             });
-
+    		//}
+    		//try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l,TimeUnit.MICROSECONDS)) {
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
             // first calculate self.w1(x) and self.w3(x)
             weights.w1[l].matmul(nTokens, state.xb, state.hb, config.hiddenDim, dim);
             weights.w3[l].matmul(nTokens, state.xb, state.hb2, config.hiddenDim, dim);
-
             // SwiGLU non-linearity
             // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
             Parallel.parallelFor(0, nTokens, t -> {
                 state.hb[t].mapInPlace(value -> value / (float) (1.0 + Math.exp(-value)));
             });
-
             // elementwise multiply with w3(x)
             Parallel.parallelFor(0, nTokens, t -> {
                 state.hb[t].multiplyInPlace(state.hb2[t]);
             });
-
             // final matmul to get the output of the ffn
             weights.w2[l].matmul(nTokens, state.hb, state.xb, dim, config.hiddenDim);
-
             // residual connection
             Parallel.parallelFor(0, nTokens, t -> {
                 state.x[t].addInPlace(state.xb[t]);
             });
+    		//}
         }
-
+        //System.out.println("<<<END LAYER LOOP");
         // final rmsnorm
         Parallel.parallelFor(0, nTokens, t -> {
             rmsnorm(state.x[t], state.x[t], weights.rms_final_weight, dim, config.rmsNormEps);

@@ -4,7 +4,11 @@ import java.io.Externalizable;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.DoubleAdder;
+
+import com.neocoretechs.cublas.Gemm;
+import com.neocoretechs.cublas.ResultScalarPool;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorShape;
@@ -16,9 +20,9 @@ import jdk.incubator.vector.VectorSpecies;
  * Not a strict tensor, but rather just a sequence of floats, not required to be backed by memory
  * e.g. can represent a sequence of quantized floats.
  */
-abstract class FloatTensor implements Externalizable, Comparable {
+public abstract class FloatTensor implements Externalizable, Comparable {
 	public static boolean DEBUG = false;
-	static final boolean USE_CUDA = true;
+	static final boolean USE_CUDA = false;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
 
@@ -57,9 +61,9 @@ abstract class FloatTensor implements Externalizable, Comparable {
         }
     }
  
-    abstract int size();
-    abstract float getFloat(int index);
-    abstract void setFloat(int index, float value);
+    public abstract int size();
+    public abstract float getFloat(int index);
+    public abstract void setFloat(int index, float value);
     abstract FloatVector getFloatVector(VectorSpecies<Float> species, int offset);
     abstract GGMLType type();
 
@@ -67,14 +71,14 @@ abstract class FloatTensor implements Externalizable, Comparable {
         assert Arrays.stream(dimensions).allMatch(i -> i > 0);
         return Arrays.stream(dimensions).reduce(Math::multiplyExact).orElseThrow();
     }
-    static float scalarDot(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public static float scalarDot(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) {
         float result = 0f;
         for (int j = 0; j < size; j++) {
             result += thiz.getFloat(thisOffset + j) * that.getFloat(thatOffset + j);
         }
         return result;
     }
-    float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
         return scalarDot(this, thisOffset, that, thatOffset, size);
     }
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
@@ -178,13 +182,32 @@ abstract class FloatTensor implements Externalizable, Comparable {
         return mapInPlace(thisOffset, size, unused -> value);
     }
     FloatTensor softmaxInPlace(int thisOffset, int size) {
-        // find max value (for numerical stability)
-        float maxVal = max(thisOffset, size);
-        // exp and sum
-        mapInPlace(thisOffset, size, f -> (float) Math.exp(f - maxVal));
-        float sum = sum(thisOffset, size);
-        // normalize
-        return divideInPlace(thisOffset, size, sum);
+    	//if(USE_CUDA) {
+    		/*try (Timer timer = Timer.log("CUDA SoftMax:"+String.valueOf(size), TimeUnit.MICROSECONDS)) {       	
+    			// 1. Extract the slice into a flat float[]
+    			float[] slice = new float[size];
+    			for (int i = 0; i < size; i++) {
+    				slice[i] = getFloat(thisOffset + i);
+    			}
+    			// 2. Call the JNI CUDA kernel
+    			float[] softmaxed = Attn.softMax(slice, 1, size);
+    			// 3. Write results back into this tensor
+    			for (int i = 0; i < size; i++) {
+    				setFloat(thisOffset + i, softmaxed[i]);
+    			}
+    			return this;
+    		}*/
+    	//} else {
+    		//try (Timer timer = Timer.log("CPU SoftMax:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
+    			// find max value (for numerical stability)
+    			float maxVal = max(thisOffset, size);
+    			// exp and sum
+    			mapInPlace(thisOffset, size, f -> (float) Math.exp(f - maxVal));
+    			float sum = sum(thisOffset, size);
+    			// normalize
+    			return divideInPlace(thisOffset, size, sum);
+    		//}
+    	//}
     }
 
     FloatTensor saxpyInPlace(int thisOffset, FloatTensor that, int thatOffset, int size, float a) {
@@ -224,7 +247,23 @@ abstract class FloatTensor implements Externalizable, Comparable {
     	}
     	return sb.toString();
     }
- 
+	protected abstract long devicePtr(); 
+	
+	public float cuBLASdotDevice(int thisOffset, FloatTensor that, int thatOffset, int size) {
+		// Preallocated device-side scalar for the result
+		ResultScalarPool.Scalar s = ResultScalarPool.acquire();
+		long dX = this.devicePtr() + (long)thisOffset * Float.BYTES;
+		long dY = that.devicePtr() + (long)thatOffset * Float.BYTES;
+
+		int rc = Gemm.sdotDevice(Llama3.cublasHandle, size, dX, 1, dY, 1, s.dPtr);
+		if (rc != 0) throw new RuntimeException("sdotDevice rc=" + rc);
+
+		// Copy back one float
+		s.download(); // copies device->host for the one float
+		float out = s.get();
+		ResultScalarPool.release(s);
+		return out;
+	}
     // Returns a lightweight read-only view (no allocation if possible).
     public abstract FloatSliceView sliceView(int offset, int length);
     // Export the slice as contiguous floats into a provided buffer (pooled).
@@ -237,5 +276,5 @@ abstract class FloatTensor implements Externalizable, Comparable {
     		System.out.println(this.getClass().getName()+".exportSlicePooled dst="+(dst == null ? "pool acquire dst length="+length+" FAIL, null!": dst.length));
     	exportSlice(dst, 0, offset, length);
     	return dst;
-    }  
+    } 
 }

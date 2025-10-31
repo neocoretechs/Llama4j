@@ -7,37 +7,46 @@ import java.io.ObjectOutput;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+
+import com.neocoretechs.cublas.DeviceBuffer;
+import com.neocoretechs.cublas.Gemm;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
 
 final class F32FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	private static final long serialVersionUID = -1L;
+	private final transient DeviceBuffer device;      // device residency
+	
 
 	int size;
 	transient MemorySegment memorySegment;
 	
-	public F32FloatTensor() {}
+	public F32FloatTensor() {
+	       this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
+	}
 	
 	public F32FloatTensor(int size, MemorySegment memorySegment) {
 		this.size = size;
 		this.memorySegment = memorySegment;
+	       this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
 	}
 
 	@Override
-	int size() {
+	public int size() {
 		return size;
 	}
 
 	@Override
-	float getFloat(int index) {
+	public float getFloat(int index) {
 		assert 0 <= index && index < size;
 		return readFloat(memorySegment, index * 4);
 	}
 
 	@Override
-	void setFloat(int index, float value) {
+	public void setFloat(int index, float value) {
 		throw new UnsupportedOperationException("setFloat");	
 	}
 
@@ -50,7 +59,10 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	GGMLType type() {
 		return GGMLType.F32;
 	}
-
+	
+    @Override
+    public long devicePtr() { return device.devicePtr; }
+    
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
 		out.writeInt(size);
@@ -87,6 +99,7 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	public FloatSliceView sliceView(int offset, int length) {
 		return new F32SliceView(memorySegment, offset, length);
 	}
+	
 	@Override
 	public float[] exportSlice(float[] dst, int dstOffset, int offset, int length) {
 		int i = 0;
@@ -97,10 +110,10 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 				FloatVector fv = FloatVector.fromMemorySegment(F_SPECIES, memorySegment, baseBytes, ByteOrder.LITTLE_ENDIAN);
 				fv.intoArray(dst, dstOffset + i);
 			}
-		}
-		for (; i < length; i++) {
-			dst[dstOffset + i] = readFloat(memorySegment, ((long) (offset + i)) * Float.BYTES);
-		}
+		} else
+			for(; i < length; i++) {
+				dst[dstOffset + i] = readFloat(memorySegment, ((long) (offset + i)) * Float.BYTES);
+			}
 		return dst;
 	}
 	@Override

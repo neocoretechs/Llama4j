@@ -7,7 +7,11 @@ import java.io.ObjectOutput;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+
+import com.neocoretechs.cublas.DeviceBuffer;
+import com.neocoretechs.cublas.Gemm;
 
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
@@ -23,19 +27,23 @@ import jdk.incubator.vector.VectorSpecies;
  */
 final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	private static final long serialVersionUID = -1L;
-
+	private final transient DeviceBuffer device;      // device residency
+	
 	int size;
     transient MemorySegment memorySegment;
 
-    public Q4_0FloatTensor() {}
+    public Q4_0FloatTensor() {
+	       this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.Q4_0.getBlockSize(), GGMLType.Q4_0.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.Q4_0.ordinal());
+    }
     
     public Q4_0FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
+        this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.Q4_0.getBlockSize(), GGMLType.Q4_0.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.Q4_0.ordinal());
     }
 
     @Override
-    int size() {
+    public int size() {
         return size;
     }
 
@@ -53,7 +61,10 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
     public GGMLType type() {
         return GGMLType.Q4_0;
     }
-
+    
+    @Override
+    public long devicePtr() { return device.devicePtr; }
+    
     @Override
     public float getFloat(int index) {
         assert 0 <= index && index < size;
@@ -73,11 +84,15 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
 
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        if (FloatTensor.USE_VECTOR_API) {
-            return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-        } else {
-            return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-        }
+       	if(FloatTensor.USE_CUDA) {
+    		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    	} else
+    		if (FloatTensor.USE_VECTOR_API) {
+    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		} else {
+    			return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+    		}
     }
 
     private static float vectorDot(Q4_0FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {

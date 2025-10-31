@@ -4,16 +4,23 @@ import java.io.Externalizable;
 import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
+
+import com.neocoretechs.cublas.DeviceBuffer;
+import com.neocoretechs.cublas.Gemm;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
 
 final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comparable {
+	private transient DeviceBuffer device;      // device residency
+
 	public static boolean DEBUG = false;
     float[] values;
     
-    public ArrayFloatTensor() {}
+    public ArrayFloatTensor() {
+    }
     
     ArrayFloatTensor(float[] values) {
         this.values = values;
@@ -57,6 +64,9 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
         }
         return FloatVector.fromArray(species, values, index);
     }
+
+    @Override
+    public long devicePtr() { return device.devicePtr; }
     
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
