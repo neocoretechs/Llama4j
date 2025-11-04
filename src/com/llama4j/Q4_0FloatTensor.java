@@ -110,11 +110,11 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
     }
 
     @Override
-    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public float dot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
        	if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		try {
-				return cuBLASdotSlice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+				return cuBLASdotSlice(cublasHandle, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
 			} catch (Throwable e) {
 		   		if (FloatTensor.USE_VECTOR_API) {
 	    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);

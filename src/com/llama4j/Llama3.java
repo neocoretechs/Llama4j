@@ -27,11 +27,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
-import java.lang.foreign.Linker;
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.SymbolLookup;
-import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -49,8 +45,6 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
 import java.util.function.LongConsumer;
@@ -71,12 +65,11 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
 import com.neocoretechs.relatrix.client.asynch.AsynchRelatrixClientTransaction;
-
 import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
 
 import com.neocoretechs.rocksack.Alias;
-import com.neocoretechs.cublas.Gemm;
+import com.llama4j.ffi.NativeLoader;
 
 public class Llama3 {
 	private static final Log log = LogFactory.getLog(Llama3.class);
@@ -91,15 +84,22 @@ public class Llama3 {
 	public static BufferedWriter outputStream = null;
 	public static PrintWriter output = null;
 	public static FileWriter fileWriter = null;
-	public static long cublasHandle;
+	public static long[] cublasHandle;
     public static MethodHandle sdotSliceHandle;
     public static MethodHandle sdotSliceQ8Handle;
     public static MethodHandle sdotSliceQ4Handle;
     public static MethodHandle sdotSliceF16Handle;
     public static MethodHandle sdotSliceBF16Handle;
+    public static MethodHandle cublasGetHandle;
+    public static MethodHandle cublasFreeHandle;
+    public static MethodHandle cudaGetMemInfo;
 	public static BufferPool poolHead   = new BufferPool();
 	public static BufferPool poolScalar = new BufferPool();
 
+	static {
+		NativeLoader.load();
+	}
+	
     static Sampler selectSampler(int vocabularySize, float temperature, float topp, long rngSeed) {
         Sampler sampler;
         if (temperature == 0.0f) {
@@ -563,80 +563,21 @@ public class Llama3 {
         		System.err.println("Could not open file " + options.modelPath.toString()+".metadata\r\n"+e);
         	}
         }
-        Llama3.cublasHandle = Gemm.cublasHandle();
-        Linker linker = Linker.nativeLinker();
-        System.out.println("linker:"+linker);
-        SymbolLookup lookup = SymbolLookup.loaderLookup();
-        System.out.println("Loader:"+lookup);
-        sdotSliceHandle = linker.downcallHandle(
-            lookup.find("sdotSlice").get(),
-            FunctionDescriptor.of(
-                ValueLayout.JAVA_FLOAT,   // return float
-                ValueLayout.ADDRESS,      // const float* q
-                ValueLayout.ADDRESS,      // const float* k
-                ValueLayout.JAVA_INT      // headSize
-            )
-        );
-        System.out.println("sdotSlice:"+sdotSliceHandle);
-        //sdotSliceQ8(const uint8_t*, const float*, int, int, int, int, int);
-        sdotSliceQ8Handle = linker.downcallHandle(
-                lookup.find("sdotSliceQ8").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_FLOAT,   // return float
-                    ValueLayout.ADDRESS,      // const float* q
-                    ValueLayout.ADDRESS,      // const float* k
-                    ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // blockSize
-                    ValueLayout.JAVA_INT,     // blocks
-                    ValueLayout.JAVA_INT,     // typeSize
-                    ValueLayout.JAVA_INT      // headerBytes
-                )
-            );
-        System.out.println("sdotSliceQ8:"+sdotSliceQ8Handle);
-        //sdotSliceQ4(const uint8_t*, const float*, int, int, int, int, int);
-        sdotSliceQ4Handle = linker.downcallHandle(
-                lookup.find("sdotSliceQ4").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_FLOAT,   // return float
-                    ValueLayout.ADDRESS,      // const float* q
-                    ValueLayout.ADDRESS,      // const float* k
-                    ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // blockSize
-                    ValueLayout.JAVA_INT,     // blocks
-                    ValueLayout.JAVA_INT,     // typeSize
-                    ValueLayout.JAVA_INT      // headerBytes
-                )
-            );
-        System.out.println("sdotSliceQ4:"+sdotSliceQ4Handle);
-        //sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
-        sdotSliceF16Handle = linker.downcallHandle(
-                lookup.find("sdotSliceF16").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_FLOAT,   // return float
-                    ValueLayout.ADDRESS,      // const float* q
-                    ValueLayout.ADDRESS,      // const float* k
-                    ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // blocks
-                    ValueLayout.JAVA_INT      // typeSize
-                )
-            );
-        System.out.println("sdotSliceF16:"+sdotSliceF16Handle);
-        //sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
-        sdotSliceBF16Handle = linker.downcallHandle(
-                lookup.find("sdotSliceBF16").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_FLOAT,   // return float
-                    ValueLayout.ADDRESS,      // const float* q
-                    ValueLayout.ADDRESS,      // const float* k
-                    ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // blocks
-                    ValueLayout.JAVA_INT      // typeSize
-                )
-            );
-        System.out.println("sdotSliceBF16:"+sdotSliceBF16Handle);
+        NativeLoader.loadMethods();
         Llama model = AOT.tryUsePreLoaded(options.modelPath(), options.maxTokens());
         if(model == null)
         	model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
+        if(FloatTensor.USE_CUDA) {
+        	Llama3.cublasHandle = new long[model.configuration().numberOfHeads];
+        	try {
+        		for(int i = 0; i < model.configuration().numberOfHeads; i++) {
+        			Llama3.cublasHandle[i] = (long) Llama3.cublasGetHandle.invokeExact();
+        		}
+        	} catch(Throwable t) {
+        		t.printStackTrace();
+        		System.exit(1);
+        	}
+        }
         Sampler sampler = selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
         if (options.interactive()) {
             runInteractive(model, sampler, options);
@@ -1685,7 +1626,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     // float* k = s.key_cache + loff + t * dim + h * headSize;
                     int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
                     // calculate the attention score as the dot product of q and k
-                    float score = state.q[token].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+                    float score = state.q[token].dot(Llama3.cublasHandle[(int)ht], qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
                     score /= sqrtHeadSize;
                     // save the score to the attention buffer
                     state.att[token].setFloat(attOffset + t, score);
@@ -2055,7 +1996,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     				// float* k = s.key_cache + loff + t * dim + h * headSize;
     				int keyCacheOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
     				// calculate the attention score as the dot product of q and k
-    				float score = state.q[0].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+    				float score = state.q[0].dot(Llama3.cublasHandle[(int)h], qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
     				score /= sqrtHeadSize;
     				// save the score to the attention buffer
     				state.att[0].setFloat(attOffset + t, score);

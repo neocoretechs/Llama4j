@@ -79,10 +79,10 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     public static final ValueLayout.OfShort JAVA_SHORT_LE = ValueLayout.JAVA_SHORT.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     @Override
-    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public float dot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {
     		try {
-				return cuBLASdotSlice(thisOffset, that, thatOffset, size);
+				return cuBLASdotSlice(cublasHandle, thisOffset, that, thatOffset, size);
 			} catch (Throwable e) {
 				//e.printStackTrace();
 				System.out.println("Failed to invoke sdotSliceQ8Handle:"+e.getMessage()+" default to CPU...");
@@ -114,17 +114,16 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
      * @param thatOffset
      * @param size
      * @return
-     */
-    public float cuBLASdot(int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public float cuBLASdot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
     	// 1. Export both slices into float[]
     	float[] a = this.exportSlice(new float[size], 0, thisOffset, size);
     	float[] b = that.exportSlice(new float[size], 0, thatOffset, size);
     	// 2. Prepare result buffer
     	float[] r = new float[1];
-    	int rc = Gemm.sdot(Llama3.cublasHandle, size, a, 1, b, 1, r);
+    	int rc = Gemm.sdot(cublasHandle, size, a, 1, b, 1, r);
     	if (rc != 0) throw new RuntimeException("JNI error " + rc);
     	return r[0];
-    }
+    }*/
     
     @Override
     public long devicePtr() { return device.devicePtr; }
@@ -215,9 +214,14 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     }
     
     public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
-        MemorySegment qSeg = this.sliceElements(thisOffset, size);
-        MemorySegment kSeg = that.sliceElements(thatOffset, size);
-        float result = (float) Llama3.sdotSliceQ8Handle.invokeExact(
+        MemorySegment qSeg = this.getSegment();//.sliceElements(thisOffset, size);
+        MemorySegment kSeg = that.getSegment();//.sliceElements(thatOffset, size);
+        //System.out.printf("sdotSliceQ8Handle( qSeq=%s, kSeg=%s, size=%d, blockSize=%d, thisOffset=%d, typeSize=%d, FLOAT16_BYTES=%d);%n",
+        //		qSeg,kSeg,size,GGMLType.Q8_0.getBlockSize(),
+        //        thisOffset,
+        //        GGMLType.Q8_0.getTypeSize(),
+        //        GGMLType.FLOAT16_BYTES);
+        float result = (float) Llama3.sdotSliceQ8Handle.invokeExact(Llama3.cublasHandle,
             qSeg, kSeg, size,
             GGMLType.Q8_0.getBlockSize(),
             thisOffset,

@@ -86,14 +86,14 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         }
         return result;
     }
-    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public float dot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
       	if(USE_CUDA) {
     		//boolean success = getDevice().upload() && that.getDevice().upload();
     		//if(success) {
     		//	return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		//}
       		try {
-				cuBLASdotSlice(thisOffset, that, thatOffset, size);
+				cuBLASdotSlice(cublasHandle, thisOffset, that, thatOffset, size);
 			} catch (Throwable e) {
 				System.out.println("FloatTensor dot fail:"+e+" falling back to scalarDot");
 				return scalarDot(this, thisOffset, that, thatOffset, size);
@@ -101,16 +101,16 @@ public abstract class FloatTensor implements Externalizable, Comparable {
       	}
 		return scalarDot(this, thisOffset, that, thatOffset, size);
     }
-    public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
-        MemorySegment qSeg = this.sliceElements(thisOffset, size);
-        MemorySegment kSeg = that.sliceElements(thatOffset, size);
-        float result = (float) Llama3.sdotSliceHandle.invokeExact(
+    public float cuBLASdotSlice(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
+        MemorySegment qSeg = this.getSegment();//this.sliceElements(thisOffset, size);
+        MemorySegment kSeg = that.getSegment();//.sliceElements(thatOffset, size);
+        float result = (float) Llama3.sdotSliceHandle.invokeExact(cublasHandle,
             qSeg, kSeg, size
         );
         return result;
     }
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
-        Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(i * dim1, that, 0, dim1)));
+        Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(Llama3.cublasHandle[i], i * dim1, that, 0, dim1)));
     }
     void matmul(int context, FloatTensor[] that, FloatTensor[] out, int dim0, int dim1) {
         if (that.length != out.length) {
@@ -119,7 +119,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         Parallel.parallelForLong(0, dim0 * context, ti -> {
             int idxArr = (int) (ti / dim0);
             int i = (int) (ti % dim0);
-            out[idxArr].setFloat(i, dot(i * dim1, that[idxArr], 0, dim1)); 
+            out[idxArr].setFloat(i, dot(Llama3.cublasHandle[i], i * dim1, that[idxArr], 0, dim1)); 
         });
     }
 
@@ -247,7 +247,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     static float cosineSimilarity(FloatTensor a, FloatTensor b) {
-    	float dotProduct = a.dot(0, b, 0, a.size());
+    	float dotProduct = a.dot(Llama3.cublasHandle[0],0, b, 0, a.size());
     	DoubleAdder aNormAdder = new DoubleAdder();
     	DoubleAdder bNormAdder = new DoubleAdder();
     	Parallel.parallelFor(0, a.size(), t -> {
@@ -277,13 +277,13 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
 	protected abstract long devicePtr(); 
 	
-	public float cuBLASdotDevice(int thisOffset, FloatTensor that, int thatOffset, int size) {
+	/*public float cuBLASdotDevice(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
 		// Preallocated device-side scalar for the result
 		ResultScalarPool.Scalar s = ResultScalarPool.acquire();
 		long dX = this.devicePtr() + (long)thisOffset * Float.BYTES;
 		long dY = that.devicePtr() + (long)thatOffset * Float.BYTES;
 
-		int rc = Gemm.sdotDevice(Llama3.cublasHandle, size, dX, 1, dY, 1, s.dPtr);
+		int rc = Gemm.sdotDevice(cublasHandle, size, dX, 1, dY, 1, s.dPtr);
 		if (rc != 0) 
 			throw new RuntimeException("sdotDevice rc=" + rc);
 
@@ -292,7 +292,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 		float out = s.get();
 		ResultScalarPool.release(s);
 		return out;
-	}
+	}*/
 	
 	public MemorySegment sliceElements(long elementOffset, long elementCount) {
 		long off = getOffsetBytes(elementOffset);
