@@ -69,6 +69,7 @@ import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
 
 import com.neocoretechs.rocksack.Alias;
+import com.llama4j.ffi.CublasHandlePool;
 import com.llama4j.ffi.NativeLoader;
 
 public class Llama3 {
@@ -84,7 +85,7 @@ public class Llama3 {
 	public static BufferedWriter outputStream = null;
 	public static PrintWriter output = null;
 	public static FileWriter fileWriter = null;
-	public static long[] cublasHandle;
+	public static CublasHandlePool cublasHandlePool;
     public static MethodHandle sdotSliceHandle;
     public static MethodHandle sdotSliceQ8Handle;
     public static MethodHandle sdotSliceQ4Handle;
@@ -564,20 +565,10 @@ public class Llama3 {
         	}
         }
         NativeLoader.loadMethods();
+        Llama3.cublasHandlePool = new CublasHandlePool(24);
         Llama model = AOT.tryUsePreLoaded(options.modelPath(), options.maxTokens());
         if(model == null)
         	model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
-        if(FloatTensor.USE_CUDA) {
-        	Llama3.cublasHandle = new long[model.configuration().numberOfHeads];
-        	try {
-        		for(int i = 0; i < model.configuration().numberOfHeads; i++) {
-        			Llama3.cublasHandle[i] = (long) Llama3.cublasGetHandle.invokeExact();
-        		}
-        	} catch(Throwable t) {
-        		t.printStackTrace();
-        		System.exit(1);
-        	}
-        }
         Sampler sampler = selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
         if (options.interactive()) {
             runInteractive(model, sampler, options);
@@ -1626,7 +1617,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     // float* k = s.key_cache + loff + t * dim + h * headSize;
                     int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
                     // calculate the attention score as the dot product of q and k
-                    float score = state.q[token].dot(Llama3.cublasHandle[(int)ht], qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+                    float score = state.q[token].dot(Llama3.cublasHandlePool.acquire(), qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
                     score /= sqrtHeadSize;
                     // save the score to the attention buffer
                     state.att[token].setFloat(attOffset + t, score);
@@ -1996,7 +1987,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     				// float* k = s.key_cache + loff + t * dim + h * headSize;
     				int keyCacheOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
     				// calculate the attention score as the dot product of q and k
-    				float score = state.q[0].dot(Llama3.cublasHandle[(int)h], qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+    				float score = state.q[0].dot(Llama3.cublasHandlePool.acquire(), qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
     				score /= sqrtHeadSize;
     				// save the score to the attention buffer
     				state.att[0].setFloat(attOffset + t, score);

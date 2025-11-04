@@ -3,15 +3,12 @@ package com.llama4j;
 import java.io.Externalizable;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.DoubleAdder;
 
 import com.neocoretechs.cublas.DeviceBuffer;
-import com.neocoretechs.cublas.Gemm;
-import com.neocoretechs.cublas.ResultScalarPool;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorShape;
@@ -24,7 +21,7 @@ import jdk.incubator.vector.VectorSpecies;
  * e.g. can represent a sequence of quantized floats.
  */
 public abstract class FloatTensor implements Externalizable, Comparable {
-	public static boolean DEBUG = false;
+	public static boolean DEBUG = true;
 	static final boolean USE_CUDA = true;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
@@ -93,7 +90,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		//	return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		//}
       		try {
-				cuBLASdotSlice(cublasHandle, thisOffset, that, thatOffset, size);
+				return cuBLASdotSlice(cublasHandle, thisOffset, that, thatOffset, size);
 			} catch (Throwable e) {
 				System.out.println("FloatTensor dot fail:"+e+" falling back to scalarDot");
 				return scalarDot(this, thisOffset, that, thatOffset, size);
@@ -101,16 +98,47 @@ public abstract class FloatTensor implements Externalizable, Comparable {
       	}
 		return scalarDot(this, thisOffset, that, thatOffset, size);
     }
+    /**
+     * If we are here, we have to slice the MemorySegment, if we are in a quantized type, we send the whole thing.
+     * It is the responsibility of the subclass NOT to slice it, but to send the entire segment, as we are using 
+     * math designed to work on the entire segment in the native methods.
+     * @param cublasHandle the handle for CUBLAS
+     * @param thisOffset offset into this segment
+     * @param that the other segment
+     * @param thatOffset offset into the other segment
+     * @param size number of elements
+     * @return the result of the sdot
+     * @throws Throwable native method fail code
+     */
     public float cuBLASdotSlice(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
-        MemorySegment qSeg = this.getSegment();//this.sliceElements(thisOffset, size);
-        MemorySegment kSeg = that.getSegment();//.sliceElements(thatOffset, size);
-        float result = (float) Llama3.sdotSliceHandle.invokeExact(cublasHandle,
-            qSeg, kSeg, size
-        );
-        return result;
+    	   if (this instanceof Q8_0FloatTensor q8) {
+    	       MemorySegment qSeg = this.getSegment();//.sliceElements(thisOffset, size);
+    	       MemorySegment kSeg = that.sliceElements(thatOffset, size);
+    	     	if(DEBUG)
+    	    		System.out.printf("%s thread:%s CUBLAS handle:%x thisOffset:%d thatOffset:%d size:%d this:%s that:%s%n", 
+    	    				this.getClass().getName(), Thread.currentThread().getName(), cublasHandle, thisOffset, thatOffset, size, qSeg, kSeg);
+    	        float result = (float) Llama3.sdotSliceQ8Handle.invokeExact(cublasHandle,
+    	            qSeg, kSeg, size,
+    	            GGMLType.Q8_0.getBlockSize(),
+    	            thisOffset,
+    	            GGMLType.Q8_0.getTypeSize(),
+    	            GGMLType.FLOAT16_BYTES
+    	        );
+    	        Llama3.cublasHandlePool.release(cublasHandle);
+    	        return result;
+    	    } else {
+    	        // Float: slice both sides
+    	        MemorySegment qSeg   = sliceElements(thisOffset, size);
+    	        MemorySegment kSeg   = that.sliceElements(thatOffset, size);
+    	        assert qSeg.byteSize() == (long) size * Float.BYTES;
+    	        assert kSeg.byteSize() == (long) size * Float.BYTES;
+    	        float result = (float) Llama3.sdotSliceHandle.invokeExact(cublasHandle, qSeg, kSeg, size);
+      	        Llama3.cublasHandlePool.release(cublasHandle);
+      	        return result;
+    	    }
     }
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
-        Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(Llama3.cublasHandle[i], i * dim1, that, 0, dim1)));
+        Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(Llama3.cublasHandlePool.acquire(), i * dim1, that, 0, dim1)));
     }
     void matmul(int context, FloatTensor[] that, FloatTensor[] out, int dim0, int dim1) {
         if (that.length != out.length) {
@@ -119,10 +147,9 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         Parallel.parallelForLong(0, dim0 * context, ti -> {
             int idxArr = (int) (ti / dim0);
             int i = (int) (ti % dim0);
-            out[idxArr].setFloat(i, dot(Llama3.cublasHandle[i], i * dim1, that[idxArr], 0, dim1)); 
+            out[idxArr].setFloat(i, dot(Llama3.cublasHandlePool.acquire(), i * dim1, that[idxArr], 0, dim1)); 
         });
     }
-
 
     @FunctionalInterface
     interface AggregateFunction {
@@ -247,7 +274,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     static float cosineSimilarity(FloatTensor a, FloatTensor b) {
-    	float dotProduct = a.dot(Llama3.cublasHandle[0],0, b, 0, a.size());
+    	long handle = Llama3.cublasHandlePool.acquire();
+    	float dotProduct = a.dot(handle ,0, b, 0, a.size());
     	DoubleAdder aNormAdder = new DoubleAdder();
     	DoubleAdder bNormAdder = new DoubleAdder();
     	Parallel.parallelFor(0, a.size(), t -> {
@@ -256,6 +284,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	});
     	float aNorm = (float) Math.sqrt(aNormAdder.sum());
     	float bNorm = (float) Math.sqrt(bNormAdder.sum());
+    	Llama3.cublasHandlePool.release(handle);
     	return (dotProduct / (aNorm * bNorm));
     }
     
