@@ -3,10 +3,13 @@ package com.llama4j;
 import java.io.Externalizable;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.DoubleAdder;
 
+import com.neocoretechs.cublas.DeviceBuffer;
 import com.neocoretechs.cublas.Gemm;
 import com.neocoretechs.cublas.ResultScalarPool;
 
@@ -22,7 +25,7 @@ import jdk.incubator.vector.VectorSpecies;
  */
 public abstract class FloatTensor implements Externalizable, Comparable {
 	public static boolean DEBUG = false;
-	static final boolean USE_CUDA = false;
+	static final boolean USE_CUDA = true;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
 
@@ -65,6 +68,11 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     public abstract float getFloat(int index);
     public abstract void setFloat(int index, float value);
     abstract FloatVector getFloatVector(VectorSpecies<Float> species, int offset);
+    public abstract DeviceBuffer getDevice();
+    public abstract MemorySegment asSlice(long offSet1, long offSet2);
+    public abstract MemorySegment getSegment();
+    public abstract long getOffsetBytes(long offset);
+    public abstract long getLengthBytes(long size, long offset);
     abstract GGMLType type();
 
     public static int numberOfElements(int... dimensions) {
@@ -79,7 +87,27 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         return result;
     }
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        return scalarDot(this, thisOffset, that, thatOffset, size);
+      	if(USE_CUDA) {
+    		//boolean success = getDevice().upload() && that.getDevice().upload();
+    		//if(success) {
+    		//	return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		//}
+      		try {
+				cuBLASdotSlice(thisOffset, that, thatOffset, size);
+			} catch (Throwable e) {
+				System.out.println("FloatTensor dot fail:"+e+" falling back to scalarDot");
+				return scalarDot(this, thisOffset, that, thatOffset, size);
+			}
+      	}
+		return scalarDot(this, thisOffset, that, thatOffset, size);
+    }
+    public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
+        MemorySegment qSeg = this.sliceElements(thisOffset, size);
+        MemorySegment kSeg = that.sliceElements(thatOffset, size);
+        float result = (float) Llama3.sdotSliceHandle.invokeExact(
+            qSeg, kSeg, size
+        );
+        return result;
     }
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
         Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(i * dim1, that, 0, dim1)));
@@ -256,7 +284,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 		long dY = that.devicePtr() + (long)thatOffset * Float.BYTES;
 
 		int rc = Gemm.sdotDevice(Llama3.cublasHandle, size, dX, 1, dY, 1, s.dPtr);
-		if (rc != 0) throw new RuntimeException("sdotDevice rc=" + rc);
+		if (rc != 0) 
+			throw new RuntimeException("sdotDevice rc=" + rc);
 
 		// Copy back one float
 		s.download(); // copies device->host for the one float
@@ -264,6 +293,18 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 		ResultScalarPool.release(s);
 		return out;
 	}
+	
+	public MemorySegment sliceElements(long elementOffset, long elementCount) {
+		long off = getOffsetBytes(elementOffset);
+		long len = getLengthBytes(elementCount, elementOffset);
+		MemorySegment seg = getSegment();
+		if (off + len > seg.byteSize()) {
+			throw new IllegalArgumentException(
+					"Slice out of bounds: off=" + off + " len=" + len + " segSize=" + seg.byteSize());
+		}
+		return seg.asSlice(off, len);
+	}
+
     // Returns a lightweight read-only view (no allocation if possible).
     public abstract FloatSliceView sliceView(int offset, int length);
     // Export the slice as contiguous floats into a provided buffer (pooled).

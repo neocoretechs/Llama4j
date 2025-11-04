@@ -23,16 +23,16 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 	private static final long serialVersionUID = -1L;
     int size;
     transient MemorySegment memorySegment;
-	private final transient DeviceBuffer device;      // device residency
+	private transient DeviceBuffer device;      // device residency
 
     public F16FloatTensor() {
-	       this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F16.getBlockSize(), GGMLType.F16.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F16.ordinal());
+	    //this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F16.getBlockSize(), GGMLType.F16.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F16.ordinal());
     }
     
     public F16FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
-        this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F16.getBlockSize(), GGMLType.F16.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F16.ordinal());
+        //this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F16.getBlockSize(), GGMLType.F16.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F16.ordinal());
     }
 
     @Override
@@ -60,15 +60,51 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
         assert 0 <= index && index < size;
         return Float.float16ToFloat(readShort(memorySegment, index * GGMLType.FLOAT16_BYTES));
     }
+    
+	@Override
+	public MemorySegment asSlice(long offSet1, long offSet2) {
+		return memorySegment.asSlice(offSet1, offSet2);
+	}
+    @Override
+    public long getOffsetBytes(long elementOffset) {
+        long blockIndex = elementOffset / GGMLType.F16.getBlockSize();
+        return blockIndex * GGMLType.F16.getTypeSize();
+    }
 
+    @Override
+    public long getLengthBytes(long elementCount, long elementOffset) {
+        long startBlock = elementOffset / GGMLType.F16.getBlockSize();
+        long endBlock   = (elementOffset + elementCount - 1) / GGMLType.F16.getBlockSize();
+        long blocks     = (endBlock - startBlock + 1);
+        return blocks * GGMLType.F16.getTypeSize();
+    }
+	@Override
+	public MemorySegment getSegment() {
+		return memorySegment;
+	}
+	
     @Override
     public long devicePtr() { return device.devicePtr; }
     
+	@Override
+	public DeviceBuffer getDevice() {
+		return device;
+	}
+    
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-      	if(FloatTensor.USE_CUDA) {
+    	if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		//return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		try {
+    			return cuBLASdotSlice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		} catch (Throwable e) {
+    			if (FloatTensor.USE_VECTOR_API) {
+    				return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    			} else {
+    				return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+    			}
+    		}
     	} else
     		if (FloatTensor.USE_VECTOR_API) {
     			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
@@ -126,7 +162,18 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 
         return result;
     }
-
+    
+    public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
+        MemorySegment qSeg = this.sliceElements(thisOffset, size);
+        MemorySegment kSeg = that.sliceElements(thatOffset, size);
+        float result = (float) Llama3.sdotSliceF16Handle.invokeExact(
+            qSeg, kSeg, size,
+            GGMLType.F16.getBlockSize(),
+            thisOffset
+        );
+        return result;
+    }
+    
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
 		out.writeInt(size);

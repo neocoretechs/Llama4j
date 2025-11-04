@@ -27,8 +27,12 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
 import java.lang.foreign.MemorySegment;
-
+import java.lang.foreign.SymbolLookup;
+import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandle;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -72,9 +76,7 @@ import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
 
 import com.neocoretechs.rocksack.Alias;
-import com.neocoretechs.cublas.AttentionRunner;
 import com.neocoretechs.cublas.Gemm;
-import com.neocoretechs.cublas.Attn;
 
 public class Llama3 {
 	private static final Log log = LogFactory.getLog(Llama3.class);
@@ -90,6 +92,11 @@ public class Llama3 {
 	public static PrintWriter output = null;
 	public static FileWriter fileWriter = null;
 	public static long cublasHandle;
+    public static MethodHandle sdotSliceHandle;
+    public static MethodHandle sdotSliceQ8Handle;
+    public static MethodHandle sdotSliceQ4Handle;
+    public static MethodHandle sdotSliceF16Handle;
+    public static MethodHandle sdotSliceBF16Handle;
 	public static BufferPool poolHead   = new BufferPool();
 	public static BufferPool poolScalar = new BufferPool();
 
@@ -557,6 +564,76 @@ public class Llama3 {
         	}
         }
         Llama3.cublasHandle = Gemm.cublasHandle();
+        Linker linker = Linker.nativeLinker();
+        System.out.println("linker:"+linker);
+        SymbolLookup lookup = SymbolLookup.loaderLookup();
+        System.out.println("Loader:"+lookup);
+        sdotSliceHandle = linker.downcallHandle(
+            lookup.find("sdotSlice").get(),
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_FLOAT,   // return float
+                ValueLayout.ADDRESS,      // const float* q
+                ValueLayout.ADDRESS,      // const float* k
+                ValueLayout.JAVA_INT      // headSize
+            )
+        );
+        System.out.println("sdotSlice:"+sdotSliceHandle);
+        //sdotSliceQ8(const uint8_t*, const float*, int, int, int, int, int);
+        sdotSliceQ8Handle = linker.downcallHandle(
+                lookup.find("sdotSliceQ8").get(),
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_FLOAT,   // return float
+                    ValueLayout.ADDRESS,      // const float* q
+                    ValueLayout.ADDRESS,      // const float* k
+                    ValueLayout.JAVA_INT,     // headSize
+                    ValueLayout.JAVA_INT,     // blockSize
+                    ValueLayout.JAVA_INT,     // blocks
+                    ValueLayout.JAVA_INT,     // typeSize
+                    ValueLayout.JAVA_INT      // headerBytes
+                )
+            );
+        System.out.println("sdotSliceQ8:"+sdotSliceQ8Handle);
+        //sdotSliceQ4(const uint8_t*, const float*, int, int, int, int, int);
+        sdotSliceQ4Handle = linker.downcallHandle(
+                lookup.find("sdotSliceQ4").get(),
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_FLOAT,   // return float
+                    ValueLayout.ADDRESS,      // const float* q
+                    ValueLayout.ADDRESS,      // const float* k
+                    ValueLayout.JAVA_INT,     // headSize
+                    ValueLayout.JAVA_INT,     // blockSize
+                    ValueLayout.JAVA_INT,     // blocks
+                    ValueLayout.JAVA_INT,     // typeSize
+                    ValueLayout.JAVA_INT      // headerBytes
+                )
+            );
+        System.out.println("sdotSliceQ4:"+sdotSliceQ4Handle);
+        //sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
+        sdotSliceF16Handle = linker.downcallHandle(
+                lookup.find("sdotSliceF16").get(),
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_FLOAT,   // return float
+                    ValueLayout.ADDRESS,      // const float* q
+                    ValueLayout.ADDRESS,      // const float* k
+                    ValueLayout.JAVA_INT,     // headSize
+                    ValueLayout.JAVA_INT,     // blocks
+                    ValueLayout.JAVA_INT      // typeSize
+                )
+            );
+        System.out.println("sdotSliceF16:"+sdotSliceF16Handle);
+        //sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
+        sdotSliceBF16Handle = linker.downcallHandle(
+                lookup.find("sdotSliceBF16").get(),
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_FLOAT,   // return float
+                    ValueLayout.ADDRESS,      // const float* q
+                    ValueLayout.ADDRESS,      // const float* k
+                    ValueLayout.JAVA_INT,     // headSize
+                    ValueLayout.JAVA_INT,     // blocks
+                    ValueLayout.JAVA_INT      // typeSize
+                )
+            );
+        System.out.println("sdotSliceBF16:"+sdotSliceBF16Handle);
         Llama model = AOT.tryUsePreLoaded(options.modelPath(), options.maxTokens());
         if(model == null)
         	model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
@@ -567,8 +644,6 @@ public class Llama3 {
             runInstructOnce(model, sampler, options);
         }
     }
-
-
 }
 
 final class GGUF {

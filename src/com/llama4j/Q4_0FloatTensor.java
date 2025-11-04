@@ -27,19 +27,19 @@ import jdk.incubator.vector.VectorSpecies;
  */
 final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	private static final long serialVersionUID = -1L;
-	private final transient DeviceBuffer device;      // device residency
+	private transient DeviceBuffer device;      // device residency
 	
 	int size;
     transient MemorySegment memorySegment;
 
     public Q4_0FloatTensor() {
-	       this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.Q4_0.getBlockSize(), GGMLType.Q4_0.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.Q4_0.ordinal());
+	       //this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.Q4_0.getBlockSize(), GGMLType.Q4_0.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.Q4_0.ordinal());
     }
     
     public Q4_0FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
-        this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.Q4_0.getBlockSize(), GGMLType.Q4_0.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.Q4_0.ordinal());
+        //this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.Q4_0.getBlockSize(), GGMLType.Q4_0.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.Q4_0.ordinal());
     }
 
     @Override
@@ -62,9 +62,36 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
         return GGMLType.Q4_0;
     }
     
+	@Override
+	public MemorySegment asSlice(long offSet1, long offSet2) {
+		return memorySegment.asSlice(offSet1, offSet2);
+	}
+	
     @Override
     public long devicePtr() { return device.devicePtr; }
     
+	@Override
+	public DeviceBuffer getDevice() {
+		return device;
+	}
+    @Override
+    public long getOffsetBytes(long elementOffset) {
+        long blockIndex = elementOffset / GGMLType.Q4_0.getBlockSize();
+        return blockIndex * GGMLType.Q4_0.getTypeSize();
+    }
+
+    @Override
+    public long getLengthBytes(long elementCount, long elementOffset) {
+        long startBlock = elementOffset / GGMLType.Q4_0.getBlockSize();
+        long endBlock   = (elementOffset + elementCount - 1) / GGMLType.Q4_0.getBlockSize();
+        long blocks     = (endBlock - startBlock + 1);
+        return blocks * GGMLType.Q4_0.getTypeSize();
+    }
+	@Override
+	public MemorySegment getSegment() {
+		return memorySegment;
+	}
+	
     @Override
     public float getFloat(int index) {
         assert 0 <= index && index < size;
@@ -86,7 +113,15 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
        	if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		try {
+				return cuBLASdotSlice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+			} catch (Throwable e) {
+		   		if (FloatTensor.USE_VECTOR_API) {
+	    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+	    		} else {
+	    			return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+	    		}
+			}
     	} else
     		if (FloatTensor.USE_VECTOR_API) {
     			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
@@ -153,7 +188,20 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
 
         return result;
     }
-
+    
+    public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
+        MemorySegment qSeg = this.sliceElements(thisOffset, size);
+        MemorySegment kSeg = that.sliceElements(thatOffset, size);
+        float result = (float) Llama3.sdotSliceQ4Handle.invokeExact(
+            qSeg, kSeg, size,
+            GGMLType.Q4_0.getBlockSize(),
+            thisOffset,
+            GGMLType.Q4_0.getTypeSize(),
+            GGMLType.FLOAT16_BYTES
+        );
+        return result;
+    }
+    
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
 		out.writeInt(size);

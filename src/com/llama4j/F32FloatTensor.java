@@ -11,27 +11,25 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 import com.neocoretechs.cublas.DeviceBuffer;
-import com.neocoretechs.cublas.Gemm;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
 
 final class F32FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	private static final long serialVersionUID = -1L;
-	private final transient DeviceBuffer device;      // device residency
-	
+	private transient DeviceBuffer device;      // device residency
 
 	int size;
 	transient MemorySegment memorySegment;
 	
 	public F32FloatTensor() {
-	       this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
+	       //this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
 	}
 	
 	public F32FloatTensor(int size, MemorySegment memorySegment) {
 		this.size = size;
 		this.memorySegment = memorySegment;
-	       this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
+	    //this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
 	}
 
 	@Override
@@ -60,8 +58,46 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 		return GGMLType.F32;
 	}
 	
+	@Override
+	public MemorySegment asSlice(long offSet1, long offSet2) {
+		return memorySegment.asSlice(offSet1, offSet2);
+	}
+	
+	@Override
+	public long getOffsetBytes(long elementOffset) {
+		long blockIndex = elementOffset / GGMLType.F32.getBlockSize();
+		return blockIndex * GGMLType.F32.getTypeSize();
+	}
+
+	@Override
+	public long getLengthBytes(long elementCount, long elementOffset) {
+		long startBlock = elementOffset / GGMLType.F32.getBlockSize();
+		long endBlock   = (elementOffset + elementCount - 1) / GGMLType.F32.getBlockSize();
+		long blocks     = (endBlock - startBlock + 1);
+		return blocks * GGMLType.F32.getTypeSize();
+	}
+
+	@Override
+	public MemorySegment getSegment() {
+		return memorySegment;
+	}
+	
     @Override
     public long devicePtr() { return device.devicePtr; }
+    
+	@Override
+	public DeviceBuffer getDevice() {
+		return device;
+	}
+	
+    public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
+        MemorySegment qSeg = this.sliceElements(thisOffset, size);
+        MemorySegment kSeg = that.sliceElements(thatOffset, size);
+        float result = (float) Llama3.sdotSliceHandle.invokeExact(
+            qSeg, kSeg, size
+        );
+        return result;
+    }
     
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
@@ -142,6 +178,7 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	    	return FloatTensor.readFloat(seg, ((long) (base + i)) * Float.BYTES);
 	    }
 	}
+
 }
 
 
