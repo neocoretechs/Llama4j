@@ -10,9 +10,6 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-import com.neocoretechs.cublas.DeviceBuffer;
-import com.neocoretechs.cublas.Gemm;
-
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorOperators;
@@ -27,7 +24,6 @@ import jdk.incubator.vector.VectorSpecies;
  */
 final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	private static final long serialVersionUID = -1L;
-	private transient DeviceBuffer device;      // device residency
 	
 	int size;
     transient MemorySegment memorySegment;
@@ -68,13 +64,6 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
 	}
 	
     @Override
-    public long devicePtr() { return device.devicePtr; }
-    
-	@Override
-	public DeviceBuffer getDevice() {
-		return device;
-	}
-    @Override
     public long getOffsetBytes(long elementOffset) {
         long blockIndex = elementOffset / GGMLType.Q4_0.getBlockSize();
         return blockIndex * GGMLType.Q4_0.getTypeSize();
@@ -114,7 +103,7 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
        	if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		try {
-				return cuBLASdotSlice(cublasHandle, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+				return cuBLASdotSlice(cublasHandle, this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
 			} catch (Throwable e) {
 		   		if (FloatTensor.USE_VECTOR_API) {
 	    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);

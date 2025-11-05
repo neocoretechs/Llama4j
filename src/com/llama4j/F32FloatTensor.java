@@ -10,14 +10,11 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-import com.neocoretechs.cublas.DeviceBuffer;
-
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
 
 final class F32FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	private static final long serialVersionUID = -1L;
-	private transient DeviceBuffer device;      // device residency
 
 	int size;
 	transient MemorySegment memorySegment;
@@ -80,14 +77,6 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	@Override
 	public MemorySegment getSegment() {
 		return memorySegment;
-	}
-	
-    @Override
-    public long devicePtr() { return device.devicePtr; }
-    
-	@Override
-	public DeviceBuffer getDevice() {
-		return device;
 	}
 	
     public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {

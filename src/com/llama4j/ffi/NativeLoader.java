@@ -86,7 +86,7 @@ public class NativeLoader {
                     ValueLayout.ADDRESS,      // const float* k
                     ValueLayout.JAVA_INT,     // headSize
                     ValueLayout.JAVA_INT,     // blockSize
-                    ValueLayout.JAVA_INT,     // blocks
+                    ValueLayout.JAVA_INT,     // index
                     ValueLayout.JAVA_INT,     // typeSize
                     ValueLayout.JAVA_INT      // headerBytes
                 )
@@ -97,11 +97,12 @@ public class NativeLoader {
                 lookup.find("sdotSliceQ4").get(),
                 FunctionDescriptor.of(
                     ValueLayout.JAVA_FLOAT,   // return float
+                    ValueLayout.JAVA_LONG,	  // cublasHandle
                     ValueLayout.ADDRESS,      // const float* q
                     ValueLayout.ADDRESS,      // const float* k
                     ValueLayout.JAVA_INT,     // headSize
                     ValueLayout.JAVA_INT,     // blockSize
-                    ValueLayout.JAVA_INT,     // blocks
+                    ValueLayout.JAVA_INT,     // index
                     ValueLayout.JAVA_INT,     // typeSize
                     ValueLayout.JAVA_INT      // headerBytes
                 )
@@ -112,10 +113,11 @@ public class NativeLoader {
                 lookup.find("sdotSliceF16").get(),
                 FunctionDescriptor.of(
                     ValueLayout.JAVA_FLOAT,   // return float
+                    ValueLayout.JAVA_LONG,	  // cublasHandle
                     ValueLayout.ADDRESS,      // const float* q
                     ValueLayout.ADDRESS,      // const float* k
                     ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // blocks
+                    ValueLayout.JAVA_INT,     // index
                     ValueLayout.JAVA_INT      // typeSize
                 )
             );
@@ -125,10 +127,11 @@ public class NativeLoader {
                 lookup.find("sdotSliceBF16").get(),
                 FunctionDescriptor.of(
                     ValueLayout.JAVA_FLOAT,   // return float
+                    ValueLayout.JAVA_LONG,	  // cublasHandle
                     ValueLayout.ADDRESS,      // const float* q
                     ValueLayout.ADDRESS,      // const float* k
                     ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // blocks
+                    ValueLayout.JAVA_INT,     // index
                     ValueLayout.JAVA_INT      // typeSize
                 )
             );

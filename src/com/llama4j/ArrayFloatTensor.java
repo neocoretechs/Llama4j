@@ -7,43 +7,37 @@ import java.io.ObjectOutput;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import java.nio.ByteBuffer;
+
 import java.util.Arrays;
 
 import com.neocoretechs.cublas.DeviceBuffer;
-import com.neocoretechs.cublas.Gemm;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
 
 final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comparable {
-	private transient DeviceBuffer device;      // device residency
-	MemorySegment memorySegment;
 	public static boolean DEBUG = false;
-    float[] values;
+	MemorySegment memorySegment;
+	
+    private float[] values;
     
     public ArrayFloatTensor() {
-    	Arena arena = Arena.ofShared();
-        // allocate off-heap space for headSize floats
-        memorySegment = arena.allocate(ValueLayout.JAVA_FLOAT, values.length);
-        // bulk copy from heap arrays if you have them
-        MemorySegment.copy(values, 0, memorySegment, ValueLayout.JAVA_FLOAT, 0, values.length);
-    	//ByteBuffer bb = ByteBuffer.allocateDirect(values.length * Float.BYTES);
-    	//bb.asFloatBuffer().put(values);
-        //this.device = new DeviceBuffer(bb, GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
     }
     
     ArrayFloatTensor(float[] values) {
-        this.values = values;
-       	Arena arena = Arena.ofShared();
-        // allocate off-heap space for headSize floats
-        memorySegment = arena.allocate(ValueLayout.JAVA_FLOAT, values.length);
-        // bulk copy from heap arrays if you have them
-        MemorySegment.copy(values, 0, memorySegment, ValueLayout.JAVA_FLOAT, 0, values.length);
-       	//memorySegment = MemorySegment.ofArray(values);
+    	this.values = values;
+    	if(FloatTensor.USE_CUDA) {
+    		Arena arena = Arena.ofShared(); // proven FFI passable
+    		//Arena arena = Arena.ofAuto(); // gc trackable
+    		// allocate off-heap space for headSize floats
+    		memorySegment = arena.allocate(ValueLayout.JAVA_FLOAT, values.length);
+    		// bulk copy from heap arrays if you have them
+    		MemorySegment.copy(values, 0, memorySegment, ValueLayout.JAVA_FLOAT, 0, values.length);
+    	}
+    	//memorySegment = MemorySegment.ofArray(values);
     	//ByteBuffer bb = ByteBuffer.allocateDirect(values.length * Float.BYTES);
     	//bb.asFloatBuffer().put(values);
-        //this.device = new DeviceBuffer(bb, GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
+    	//this.device = new DeviceBuffer(bb, GGMLType.F32.getBlockSize(), GGMLType.F32.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F32.ordinal());
     }
 
     public static FloatTensor allocate(int... dims) {
@@ -64,6 +58,8 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     @Override
     public void setFloat(int index, float value) {
         values[index] = value;
+        if(FloatTensor.USE_CUDA)
+        	memorySegment.setAtIndex(ValueLayout.JAVA_FLOAT, index, value);
     }
 
     @Override
@@ -74,6 +70,10 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     @Override
     public FloatTensor fillInPlace(int thisOffset, int size, float value) {
         Arrays.fill(values, thisOffset, thisOffset + size, value);
+        if(FloatTensor.USE_CUDA) {
+        	for(int index = thisOffset; index < thisOffset+size; index++)
+        		memorySegment.setAtIndex(ValueLayout.JAVA_FLOAT, index, value);
+        }
         return this;
     }
 
@@ -84,9 +84,6 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
         }
         return FloatVector.fromArray(species, values, index);
     }
-
-    @Override
-    public long devicePtr() { return device.devicePtr; }
     
 	@Override
 	public MemorySegment getSegment() {
@@ -107,11 +104,6 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     }
     
 	@Override
-	public DeviceBuffer getDevice() {
-		return device;
-	}
-    
-	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
 		out.writeInt(values.length);
 		for(float v: values)
@@ -124,6 +116,14 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 		values = new float[vsize];
 		for(int i = 0; i < vsize; i++)
 			values[i]= in.readFloat();
+	 	if(FloatTensor.USE_CUDA) {
+    		Arena arena = Arena.ofShared(); // proven FFI passable
+    		//Arena arena = Arena.ofAuto(); // gc trackable
+    		// allocate off-heap space for headSize floats
+    		memorySegment = arena.allocate(ValueLayout.JAVA_FLOAT, values.length);
+    		// bulk copy from heap arrays if you have them
+    		MemorySegment.copy(values, 0, memorySegment, ValueLayout.JAVA_FLOAT, 0, values.length);
+    	}
 	}
 
 	@Override
@@ -156,10 +156,12 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
         public float get(int i) { return data[base + i]; }
     }
 
-	@Override
-	public MemorySegment asSlice(long offSet1, long offSet2) {
-		return memorySegment.asSlice(offSet1, offSet2);
-	}
+    @Override
+    public MemorySegment asSlice(long elementOffset, long elementCount) {
+    	long offBytes = elementOffset * Float.BYTES;
+    	long lenBytes = elementCount * Float.BYTES;
+    	return memorySegment.asSlice(offBytes, lenBytes);
+    }
 }
 
 

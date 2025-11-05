@@ -10,9 +10,6 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-import com.neocoretechs.cublas.DeviceBuffer;
-import com.neocoretechs.cublas.Gemm;
-
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.ShortVector;
 import jdk.incubator.vector.VectorOperators;
@@ -23,7 +20,6 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
 
     int size;
     transient MemorySegment memorySegment;
-	private transient DeviceBuffer device;      // device residency
     
     public BF16FloatTensor() {
     	//this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.BF16.getBlockSize(), GGMLType.BF16.getTypeSize(), GGMLType.BFLOAT16_BYTES, DeviceBuffer.GGUFQ.BF16.ordinal());
@@ -89,20 +85,13 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
         return Float.intBitsToFloat(bfloat16 << 16);
     }
     
-    public long devicePtr() { return device.devicePtr; }
-    
-	@Override
-	public DeviceBuffer getDevice() {
-		return device;
-	}
-    
     @Override
     public float dot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		//return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
       		try {
-    			return cuBLASdotSlice(cublasHandle, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    			return cuBLASdotSlice(cublasHandle, this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		} catch (Throwable e) {
     			if (FloatTensor.USE_VECTOR_API) {
     				return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);

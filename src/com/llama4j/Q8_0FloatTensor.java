@@ -9,9 +9,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-
-import com.neocoretechs.cublas.DeviceBuffer;
-import com.neocoretechs.cublas.Gemm;
+import java.util.concurrent.TimeUnit;
 
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
@@ -20,7 +18,6 @@ import jdk.incubator.vector.VectorSpecies;
 
 final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Comparable {
 	private static final long serialVersionUID = -1L;
-	private transient DeviceBuffer device;      // device residency
 	
 	int size;
     transient MemorySegment memorySegment;
@@ -82,7 +79,19 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     public float dot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {
     		try {
-				return cuBLASdotSlice(cublasHandle, thisOffset, that, thatOffset, size);
+     			//float result1, result2;
+      			//try (Timer timer = Timer.log("Q8 cublas dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
+      				return cuBLASdotSlice(cublasHandle, this, thisOffset, that, thatOffset, size);
+      			//}
+      			//try (Timer timer = Timer.log("Q8 scalar dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
+      			//   	if (FloatTensor.USE_VECTOR_API) {
+    	        //		result2 = vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    	        //	} else
+    	        //		result2 = FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+      			//}
+      			//if(result1 != result2)
+      			//	System.out.println("Q8 results differ cublas dot:"+result1+", cpu dot:"+result2);
+      			//return result2;
 			} catch (Throwable e) {
 				//e.printStackTrace();
 				System.out.println("Failed to invoke sdotSliceQ8Handle:"+e.getMessage()+" default to CPU...");
@@ -91,16 +100,6 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
 	        	}
 	        	return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
 			}
-    		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		//boolean success = device.upload() && that.getDevice().upload();
-    		//if(success) {
-    			//return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		//}
-    		// default to CPU
-    	   	//if (FloatTensor.USE_VECTOR_API) {
-        	//	return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-        	//}
-        	//return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
     	}
     	if (FloatTensor.USE_VECTOR_API) {
     		return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
@@ -125,13 +124,6 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     	return r[0];
     }*/
     
-    @Override
-    public long devicePtr() { return device.devicePtr; }
-    
-	@Override
-	public DeviceBuffer getDevice() {
-		return device;
-	}
     @Override
     public long getOffsetBytes(long elementOffset) {
         long blockIndex = elementOffset / GGMLType.Q8_0.getBlockSize();
