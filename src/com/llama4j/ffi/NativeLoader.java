@@ -61,101 +61,131 @@ public class NativeLoader {
 	}
 
 	public static void loadMethods() {
-        Linker linker = Linker.nativeLinker();
-        System.out.println("linker:"+linker);
-        SymbolLookup lookup = SymbolLookup.loaderLookup();
-        System.out.println("Loader:"+lookup);
-        Llama3.sdotSliceHandle = linker.downcallHandle(
-            lookup.find("sdotSlice").get(),
-            FunctionDescriptor.of(
-                ValueLayout.JAVA_FLOAT,   // return float
-                ValueLayout.JAVA_LONG,	  // cublasHandle
-                ValueLayout.ADDRESS,      // const float* q
-                ValueLayout.ADDRESS,      // const float* k
-                ValueLayout.JAVA_INT      // headSize
-            )
-        );
-        System.out.println("sdotSlice:"+Llama3.sdotSliceHandle);
-        //sdotSliceQ8(const uint8_t*, const float*, int, int, int, int, int);
-        Llama3.sdotSliceQ8Handle = linker.downcallHandle(
-                lookup.find("sdotSliceQ8").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_FLOAT,   // return float
-                    ValueLayout.JAVA_LONG,	  // cublasHandle
-                    ValueLayout.ADDRESS,      // const float* q
-                    ValueLayout.ADDRESS,      // const float* k
-                    ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // blockSize
-                    ValueLayout.JAVA_INT,     // index
-                    ValueLayout.JAVA_INT,     // typeSize
-                    ValueLayout.JAVA_INT      // headerBytes
-                )
-            );
-        System.out.println("sdotSliceQ8:"+Llama3.sdotSliceQ8Handle);
-        //sdotSliceQ4(const uint8_t*, const float*, int, int, int, int, int);
-        Llama3.sdotSliceQ4Handle = linker.downcallHandle(
-                lookup.find("sdotSliceQ4").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_FLOAT,   // return float
-                    ValueLayout.JAVA_LONG,	  // cublasHandle
-                    ValueLayout.ADDRESS,      // const float* q
-                    ValueLayout.ADDRESS,      // const float* k
-                    ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // blockSize
-                    ValueLayout.JAVA_INT,     // index
-                    ValueLayout.JAVA_INT,     // typeSize
-                    ValueLayout.JAVA_INT      // headerBytes
-                )
-            );
-        System.out.println("sdotSliceQ4:"+Llama3.sdotSliceQ4Handle);
-        //sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
-        Llama3.sdotSliceF16Handle = linker.downcallHandle(
-                lookup.find("sdotSliceF16").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_FLOAT,   // return float
-                    ValueLayout.JAVA_LONG,	  // cublasHandle
-                    ValueLayout.ADDRESS,      // const float* q
-                    ValueLayout.ADDRESS,      // const float* k
-                    ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // index
-                    ValueLayout.JAVA_INT      // typeSize
-                )
-            );
-        System.out.println("sdotSliceF16:"+Llama3.sdotSliceF16Handle);
-        //sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
-        Llama3.sdotSliceBF16Handle = linker.downcallHandle(
-                lookup.find("sdotSliceBF16").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_FLOAT,   // return float
-                    ValueLayout.JAVA_LONG,	  // cublasHandle
-                    ValueLayout.ADDRESS,      // const float* q
-                    ValueLayout.ADDRESS,      // const float* k
-                    ValueLayout.JAVA_INT,     // headSize
-                    ValueLayout.JAVA_INT,     // index
-                    ValueLayout.JAVA_INT      // typeSize
-                )
-            );
-        System.out.println("sdotSliceBF16:"+Llama3.sdotSliceBF16Handle);
-        Llama3.cublasGetHandle = linker.downcallHandle(
-                lookup.find("cublasHandle").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_LONG  // return long handle
-                )
-            );
-        Llama3.cublasFreeHandle = linker.downcallHandle(
-                lookup.find("cublasHandleDestroy").get(),
-                FunctionDescriptor.ofVoid(
-                	// return void
-                	ValueLayout.JAVA_LONG  // pass long handle
-                )
-            );
-        Llama3.cudaGetMemInfo = linker.downcallHandle(
-                lookup.find("cudaGetMemInfo").get(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_INT,   // return int
-                    ValueLayout.ADDRESS,    // size_t* free
-                    ValueLayout.ADDRESS     // size_t* total
-                )
-            );
+		Linker linker = Linker.nativeLinker();
+		System.out.println("linker:"+linker);
+		SymbolLookup lookup = SymbolLookup.loaderLookup();
+		System.out.println("Loader:"+lookup);
+		Llama3.sdotSliceHandle = linker.downcallHandle(
+				lookup.find("sdotSlice").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,	  // cublasHandle
+						ValueLayout.ADDRESS,      // const float* q
+						ValueLayout.ADDRESS,      // const float* k
+						ValueLayout.JAVA_INT      // headSize
+						));
+		System.out.println("sdotSlice:"+Llama3.sdotSliceHandle);
+		//sdotSliceQ8(const uint8_t*, const float*, int, int, int, int, int);
+		Llama3.sdotSliceQ8Handle = linker.downcallHandle(
+				lookup.find("sdotSliceQ8").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,	  // cublasHandle
+						ValueLayout.ADDRESS,      // const float* q
+						ValueLayout.ADDRESS,      // const float* k
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // blockSize
+						ValueLayout.JAVA_INT,     // index
+						ValueLayout.JAVA_INT,     // typeSize
+						ValueLayout.JAVA_INT      // headerBytes
+						));
+		System.out.println("sdotSliceQ8:"+Llama3.sdotSliceQ8Handle);
+		//sdotSliceQ4(const uint8_t*, const float*, int, int, int, int, int);
+		Llama3.sdotSliceQ4Handle = linker.downcallHandle(
+				lookup.find("sdotSliceQ4").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,	  // cublasHandle
+						ValueLayout.ADDRESS,      // const float* q
+						ValueLayout.ADDRESS,      // const float* k
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // blockSize
+						ValueLayout.JAVA_INT,     // index
+						ValueLayout.JAVA_INT,     // typeSize
+						ValueLayout.JAVA_INT      // headerBytes
+						));
+		System.out.println("sdotSliceQ4:"+Llama3.sdotSliceQ4Handle);
+		//sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
+		Llama3.sdotSliceF16Handle = linker.downcallHandle(
+				lookup.find("sdotSliceF16").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,	  // cublasHandle
+						ValueLayout.ADDRESS,      // const float* q
+						ValueLayout.ADDRESS,      // const float* k
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // index
+						ValueLayout.JAVA_INT      // typeSize
+						));
+		System.out.println("sdotSliceF16:"+Llama3.sdotSliceF16Handle);
+		//sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
+		Llama3.sdotSliceBF16Handle = linker.downcallHandle(
+				lookup.find("sdotSliceBF16").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,	  // cublasHandle
+						ValueLayout.ADDRESS,      // const float* q
+						ValueLayout.ADDRESS,      // const float* k
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // index
+						ValueLayout.JAVA_INT      // typeSize
+						));
+		System.out.println("sdotSliceBF16:"+Llama3.sdotSliceBF16Handle);
+		Llama3.cublasGetHandle = linker.downcallHandle(
+				lookup.find("cublasHandle").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_LONG  // return long handle
+						));
+		Llama3.cublasFreeHandle = linker.downcallHandle(
+				lookup.find("cublasHandleDestroy").get(),
+				FunctionDescriptor.ofVoid(
+						// return void
+						ValueLayout.JAVA_LONG  // pass long handle
+						));
+		Llama3.cudaGetMemInfo = linker.downcallHandle(
+				lookup.find("cudaGetMemInfo").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_INT,   // return int
+						ValueLayout.ADDRESS,    // size_t* free
+						ValueLayout.ADDRESS     // size_t* total
+						));
+		// Signature: void launch_rmsnorm_fp32_rowmajor(const float* x, const float* weight, float* out, int size, float eps)
+		Llama3.launchRmsnorm = linker.downcallHandle(
+				lookup.find("launch_rmsnorm_fp32_rowmajor").get(),
+				FunctionDescriptor.ofVoid(
+						ValueLayout.ADDRESS, // x
+						ValueLayout.ADDRESS, // weight
+						ValueLayout.ADDRESS, // out
+						ValueLayout.JAVA_INT,   // size
+						ValueLayout.JAVA_FLOAT  // eps
+						)
+				);
+		Llama3.launchQK = linker.downcallHandle(
+				lookup.find("launch_qk_scores_fp32_rowmajor").get(),
+				FunctionDescriptor.ofVoid(
+						ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, // Q, K, S
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // nHeads, headSize, contextLen
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // kvDim, kvMul, tMaxInclusive
+						ValueLayout.JAVA_FLOAT, // invSqrtHeadSize
+						ValueLayout.JAVA_LONG   // layerBaseOffset (size_t)
+						)
+				);
+		Llama3.launchSoftmax = linker.downcallHandle(
+				lookup.find("launch_row_softmax_fp32").get(),
+				FunctionDescriptor.ofVoid(
+						ValueLayout.ADDRESS, ValueLayout.ADDRESS, // S, A
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // rows, cols
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT  // ldS, ldA
+						)
+				);
+		Llama3.launchAV = linker.downcallHandle(
+				lookup.find("launch_av_weighted_sum_fp32_rowmajor").get(),
+				FunctionDescriptor.ofVoid(
+						ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, // Q, K, S
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // nHeads, headSize, contextLen
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // kvDim, kvMul, tMaxInclusive
+						ValueLayout.JAVA_LONG // layerBaseOffset (size_t)
+						)
+				);
 	}
 }

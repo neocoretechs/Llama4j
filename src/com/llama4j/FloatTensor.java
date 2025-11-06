@@ -1,12 +1,14 @@
 package com.llama4j;
 
 import java.io.Externalizable;
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.DoubleAdder;
+import java.util.function.IntFunction;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorShape;
@@ -23,7 +25,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 	public static final boolean USE_CUDA = true;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
-
+    private long devicePtr; // 0 if not uploaded
+    
     static short readShort(MemorySegment memorySegment, long offset) {
         return memorySegment.get(ValueLayout.JAVA_SHORT, offset);
         //return UNSAFE.getShort(memorySegment.address() + offset);
@@ -124,6 +127,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	if(DEBUG)
     		System.out.printf("%s thread:%s CUBLAS handle:%x thisOffset:%d thatOffset:%d size:%d%n", 
     				thiz.getClass().getName(), Thread.currentThread().getName(), cublasHandle, thisOffset, thatOffset, size);
+		  boolean released = false;
+    	try {
     	switch(thiz) {
     	case Q8_0FloatTensor q8 -> {
     		qSeg = thiz.getSegment();
@@ -139,7 +144,6 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		float r = (float) Llama3.sdotSliceQ4Handle.invokeExact(cublasHandle, qSeg, kSeg, size, GGMLType.Q4_0.getBlockSize(),
     				thisOffset, GGMLType.Q4_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
     		Llama3.cublasHandlePool.release(cublasHandle);
-    		Llama3.cublasHandlePool.release(cublasHandle);
     		return r;
     	}
     	case F16FloatTensor F16 -> { 
@@ -152,7 +156,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	case  BF16FloatTensor BF16 -> {
     		qSeg = thiz.getSegment();
     		kSeg = that.getSegment();
-    		float r = (float) Llama3.sdotSliceBF16Handle.invokeExact(cublasHandle, qSeg, kSeg, size,thisOffset, GGMLType.F16.getTypeSize());
+    		float r = (float) Llama3.sdotSliceBF16Handle.invokeExact(cublasHandle, qSeg, kSeg, size,thisOffset, GGMLType.BF16.getTypeSize());
     		Llama3.cublasHandlePool.release(cublasHandle);
     		return r;
     	}
@@ -167,7 +171,49 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		return result;
     	}
     	}
+    } finally {
+        if (!released) {
+            Llama3.cublasHandlePool.release(cublasHandle);
+            released = true;
+        }
+    }
 
+    }
+    /**
+     * every time you need to pass a device buffer into a downcall, 
+     * call devSeg(ptr, size, arena) and get a properly bounded MemorySegment. 
+     * avoids repeating FFI Address/reinterpret 
+     * @param devicePtr
+     * @param bytes
+     * @param arena
+     * @return
+     */
+    static MemorySegment devSeg(long devicePtr, long bytes, Arena arena) {
+    	   MemorySegment base = MemorySegment.ofAddress(devicePtr);
+    	   return base.reinterpret(bytes, arena, null);
+    }
+    public long devicePtrOr0() {
+        return devicePtr;
+    }
+    public boolean isOnDevice() {
+        return devicePtr != 0L;
+    }
+    static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) throws Throwable {
+        try (Arena arena = Arena.ofAuto()) {
+            MemorySegment xDev  = devSeg(x.devicePtrOr0(),      (long) size * Float.BYTES, arena);
+            MemorySegment wDev  = devSeg(weight.devicePtrOr0(), (long) size * Float.BYTES, arena);
+            MemorySegment oDev  = devSeg(out.devicePtrOr0(),    (long) size * Float.BYTES, arena);
+            Llama3.launchRmsnorm.invokeExact(xDev, wDev, oDev, size, eps);
+        }
+    }
+    public static FloatTensor[] loadArrayOfF32Tensors(int size, IntFunction<GGMLTensorEntry> get) {
+        FloatTensor[] array = new FloatTensor[size];
+        for (int i = 0; i < size; i++) {
+            GGMLTensorEntry e = get.apply(i);
+            if (e.ggmlType() != GGMLType.F32) throw new UnsupportedOperationException("Expected F32");
+            array[i] = new F32FloatTensor(FloatTensor.numberOfElements(e.shape()), e.memorySegment());
+        }
+        return array;
     }
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
         Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(Llama3.cublasHandlePool.acquire(), i * dim1, that, 0, dim1)));

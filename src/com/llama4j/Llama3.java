@@ -94,6 +94,10 @@ public class Llama3 {
     public static MethodHandle cublasGetHandle;
     public static MethodHandle cublasFreeHandle;
     public static MethodHandle cudaGetMemInfo;
+    public static MethodHandle launchRmsnorm;
+    public static MethodHandle launchQK;
+    public static MethodHandle launchSoftmax;
+    public static MethodHandle launchAV;
 	public static BufferPool poolHead   = new BufferPool();
 	public static BufferPool poolScalar = new BufferPool();
 
@@ -1066,7 +1070,10 @@ final class ModelLoader {
                     if (loadWeights) {
                     	// loadTensors corresponds to getTensorEntries in old version
                         Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
-                        weights = loadGPT2Weights(tensorEntries, config);
+                        if(FloatTensor.USE_CUDA)
+                        	weights = loadGPT2WeightsGPU(tensorEntries, config);
+                        else
+                        	weights = loadGPT2Weights(tensorEntries, config);
                     }
             	} else {
             		if(ModelLoader.name.equals("qwen")) {
@@ -1153,7 +1160,45 @@ final class ModelLoader {
         );
         return qw;
     }
-    
+    /**
+     * Called from AOT.tryUsePreloaded and ModelLoader.loadModel
+     * @param tensorEntries
+     * @param config
+     * @return
+     */
+    static Llama.Weights loadGPT2WeightsGPU(Map<String, GGMLTensorEntry> tensorEntries, Llama.Configuration config) {
+        boolean ropeScaling = tensorEntries.containsKey("rope_freqs");
+        float scaleFactor = 8;
+        float loFreqFactor = 1;
+        float hiFreqFactor = 3;
+        int oldContextLength = 8192;
+        Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLength, config.headSize, config.ropeTheta,
+                ropeScaling, scaleFactor, loFreqFactor, hiFreqFactor, oldContextLength);
+        float[] ropeFreqsReal = ropeFreqs.first();
+        float[] ropeFreqsImag = ropeFreqs.second();
+
+        GGMLTensorEntry tokenEmbeddings = tensorEntries.get("token_embd.weight");
+        
+        Llama.Weights qw = new Llama.Weights(
+                loadQuantized(tokenEmbeddings),
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")),
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_q.weight")),
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")), // w1
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_down.weight")), // w2
+                loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_up.weight")), // w3
+                Llama.Weights.wrapTensor(tensorEntries.get("output_norm.weight")),
+                FloatBuffer.wrap(ropeFreqsReal),
+                FloatBuffer.wrap(ropeFreqsImag),
+                // If "output.weight" is not present then the embedding weights are tied/shared with the decoder.
+                // This is commonly referred as "tie word embeddings".
+                loadQuantized(tensorEntries.getOrDefault("output.weight", tokenEmbeddings))
+        );
+        return qw;
+    }
     static Llama.Weights loadLlamaWeights(Map<String, GGMLTensorEntry> tensorEntries, Llama.Configuration config) {
     	   Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLength, config.headSize, config.ropeTheta);
            float[] ropeFreqsReal = ropeFreqs.first();
@@ -1204,7 +1249,41 @@ final class ModelLoader {
     			);
     	return qw;
     }
+    
+	static Llama.Weights loadLlamaWeightsGPU(Map<String, GGMLTensorEntry> T, Llama.Configuration cfg) {
+        Pair<float[], float[]> rope = RoPE.precomputeFreqsCis(cfg.contextLength, cfg.headSize, cfg.ropeTheta);
+        FloatTensor tokenEmb = Llama.Weights.wrapTensor(T.get("token_embd.weight")); // unified
 
+        FloatTensor[] attnNorm = FloatTensor.loadArrayOfF32Tensors(cfg.numberOfLayers, i -> T.get("blk."+i+".attn_norm.weight"));
+        FloatTensor[] attnQ    = loadArrayOfQuantized(cfg.numberOfLayers, i -> T.get("blk."+i+".attn_q.weight"));
+        FloatTensor[] attnK    = loadArrayOfQuantized(cfg.numberOfLayers, i -> T.get("blk."+i+".attn_k.weight"));
+        FloatTensor[] attnV    = loadArrayOfQuantized(cfg.numberOfLayers, i -> T.get("blk."+i+".attn_v.weight"));
+        FloatTensor[] attnOut  = loadArrayOfQuantized(cfg.numberOfLayers, i -> T.get("blk."+i+".attn_output.weight"));
+
+        FloatTensor[] ffnNorm  = FloatTensor.loadArrayOfF32Tensors(cfg.numberOfLayers, i -> T.get("blk."+i+".ffn_norm.weight"));
+        FloatTensor[] ffnGate  = loadArrayOfQuantized(cfg.numberOfLayers, i -> T.get("blk."+i+".ffn_gate.weight"));
+        FloatTensor[] ffnDown  = loadArrayOfQuantized(cfg.numberOfLayers, i -> T.get("blk."+i+".ffn_down.weight"));
+        FloatTensor[] ffnUp    = loadArrayOfQuantized(cfg.numberOfLayers, i -> T.get("blk."+i+".ffn_up.weight"));
+
+        FloatTensor outNorm    = Llama.Weights.wrapTensor(T.get("output_norm.weight"));
+        FloatTensor outWeight  = Llama.Weights.wrapTensor(T.get("output.weight"));
+
+        FloatTensor ropeReal   = new F32FloatTensor(rope.first().length, MemorySegment.ofArray(rope.first()));
+        FloatTensor ropeImag   = new F32FloatTensor(rope.second().length, MemorySegment.ofArray(rope.second()));
+
+        return new Llama.Weights(
+            tokenEmb,
+            attnNorm,     // if constructor still wants buffers, adapt below
+            attnQ, attnK, attnV,
+            attnOut,
+            ffnNorm,
+            ffnGate, ffnDown, ffnUp,
+            outNorm,
+            FloatBuffer.wrap(rope.first()),     // keep compatibility for now
+            FloatBuffer.wrap(rope.second()),
+            outWeight
+        );
+    }
     private final static String QWEN2_PATTERN = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
     private static Tokenizer createQwen2Tokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
@@ -1382,7 +1461,14 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         // token embedding table
         public final FloatTensor token_embedding_table; // (vocab_size, dim)
         // weights for rmsnorms
-        public final FloatBuffer[] rms_att_weight; // (layer, dim) rmsnorm weights
+        public FloatBuffer[] rms_att_weight; // (layer, dim) rmsnorm weights
+        public FloatBuffer[] rms_ffn_weight; // (layer, dim)
+        public FloatBuffer rms_final_weight; // (dim,)
+        // GPU-friendly rmsnorms
+        public FloatTensor[] rms_att_weight_dev;
+        public FloatTensor[] rms_ffn_weight_dev;
+        public FloatTensor rms_final_weight_dev;
+
         // weights for matmuls
         public final FloatTensor[] wq; // (layer, n_heads * head_size)
         public final FloatTensor[] wk; // (layer, n_kv_heads, head_size)
@@ -1394,19 +1480,33 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         public FloatTensor[] k_bias = null; // (layer, kv_dim)
         public FloatTensor[] v_bias = null; // (layer, kv_dim)
         
-        public final FloatBuffer[] rms_ffn_weight; // (layer, dim)
         // weights for ffn
         public final FloatTensor[] w1; // (layer, hidden_dim, dim)
         public final FloatTensor[] w2; // (layer, dim, hidden_dim)
         public final FloatTensor[] w3; // (layer, hidden_dim, dim)
-        // public final rmsnorm
-        public final FloatBuffer rms_final_weight; // (dim,)
+ 
         // freq_cis for RoPE relatively positional embeddings
         public final FloatBuffer freq_cis_real; // (seq_len, head_size/2)
         public final FloatBuffer freq_cis_imag; // (seq_len, head_size/2)
         // (optional) classifier weights for the logits, on the last layer
         public final FloatTensor wcls; // (vocab_size, dim)
-
+        /**
+         * Llama weights for CPU
+         * @param token_embedding_table
+         * @param rms_att_weight
+         * @param wq
+         * @param wk
+         * @param wv
+         * @param wo
+         * @param rms_ffn_weight
+         * @param w1
+         * @param w2
+         * @param w3
+         * @param rms_final_weight
+         * @param freq_cis_real
+         * @param freq_cis_imag
+         * @param wcls
+         */
         public Weights(FloatTensor token_embedding_table, FloatBuffer[] rms_att_weight, FloatTensor[] wq, FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] wo, FloatBuffer[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, FloatTensor[] w3, FloatBuffer rms_final_weight, FloatBuffer freq_cis_real, FloatBuffer freq_cis_imag, FloatTensor wcls) {
             this.token_embedding_table = token_embedding_table;
             this.rms_att_weight = rms_att_weight;
@@ -1423,7 +1523,26 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             this.freq_cis_imag = freq_cis_imag;
             this.wcls = wcls;
         }
-
+        /**
+         * Weights for Qwen CPU
+         * @param token_embedding_table
+         * @param rms_att_weight
+         * @param wq
+         * @param wk
+         * @param wv
+         * @param wo
+         * @param q qwen specific
+         * @param k qwen specific
+         * @param v qwen specific
+         * @param rms_ffn_weight
+         * @param w1
+         * @param w2
+         * @param w3
+         * @param rms_final_weight
+         * @param freq_cis_real
+         * @param freq_cis_imag
+         * @param wcls
+         */
         public Weights(FloatTensor token_embedding_table, FloatBuffer[] rms_att_weight, FloatTensor[] wq, FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] wo, FloatTensor[] q, FloatTensor[] k, FloatTensor[] v, FloatBuffer[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, FloatTensor[] w3, FloatBuffer rms_final_weight, FloatBuffer freq_cis_real, FloatBuffer freq_cis_imag, FloatTensor wcls) {
         	this.token_embedding_table = token_embedding_table;
         	this.rms_att_weight = rms_att_weight;
@@ -1431,9 +1550,9 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         	this.wk = wk;
         	this.wv = wv;
         	this.wo = wo;
-        	this.q_bias = q;
-        	this.k_bias = k;
-        	this.v_bias = v;
+        	this.q_bias = q; // qwen
+        	this.k_bias = k; // qwen
+        	this.v_bias = v; // qwen
         	this.rms_ffn_weight = rms_ffn_weight;
         	this.w1 = w1;
         	this.w2 = w2;
@@ -1442,6 +1561,55 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         	this.freq_cis_real = freq_cis_real;
         	this.freq_cis_imag = freq_cis_imag;
         	this.wcls = wcls;
+        }
+        
+        /**
+         * Llama GPU specific weights
+         * @param token_embedding_table
+         * @param rms_att_weight GPU
+         * @param wq
+         * @param wk
+         * @param wv
+         * @param wo
+         * @param rms_ffn_weight GPU
+         * @param w1
+         * @param w2
+         * @param w3
+         * @param rms_final_weight GPU
+         * @param freq_cis_real
+         * @param freq_cis_imag
+         * @param wcls
+         */
+        public Weights(FloatTensor token_embedding_table, FloatTensor[] rms_att_weight, FloatTensor[] wq, 
+        		FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] wo, 
+        		FloatTensor[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, 
+        		FloatTensor[] w3, FloatTensor rms_final_weight, FloatBuffer freq_cis_real, FloatBuffer freq_cis_imag, 
+        		FloatTensor wcls) {
+            this.token_embedding_table = token_embedding_table;
+            this.rms_att_weight_dev = rms_att_weight;
+            this.wq = wq;
+            this.wk = wk;
+            this.wv = wv;
+            this.wo = wo;
+            this.rms_ffn_weight_dev = rms_ffn_weight;
+            this.w1 = w1;
+            this.w2 = w2;
+            this.w3 = w3;
+            this.rms_final_weight_dev = rms_final_weight;
+            this.freq_cis_real = freq_cis_real;
+            this.freq_cis_imag = freq_cis_imag;
+            this.wcls = wcls;
+        }
+
+        static FloatTensor wrapTensor(GGMLTensorEntry e) {
+            return switch (e.ggmlType()) {
+                case F32  -> new F32FloatTensor(FloatTensor.numberOfElements(e.shape()), e.memorySegment());
+                case Q8_0 -> new Q8_0FloatTensor(FloatTensor.numberOfElements(e.shape()), e.memorySegment());
+                case Q4_0 -> new Q4_0FloatTensor(FloatTensor.numberOfElements(e.shape()), e.memorySegment());
+                case BF16 -> new BF16FloatTensor(FloatTensor.numberOfElements(e.shape()), e.memorySegment());
+                case F16  -> new F16FloatTensor(FloatTensor.numberOfElements(e.shape()), e.memorySegment());
+                default   -> throw new UnsupportedOperationException("Quantization format " + e.ggmlType());
+            };
         }
     }
 
