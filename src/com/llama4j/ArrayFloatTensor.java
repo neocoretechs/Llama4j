@@ -27,10 +27,8 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     ArrayFloatTensor(float[] values) {
     	this.values = values;
     	if(FloatTensor.USE_CUDA) {
-    		Arena arena = Arena.ofShared(); // proven FFI passable
-    		//Arena arena = Arena.ofAuto(); // gc trackable
     		// allocate off-heap space for headSize floats
-    		memorySegment = arena.allocate(ValueLayout.JAVA_FLOAT, values.length);
+    		memorySegment = getArena().allocate(ValueLayout.JAVA_FLOAT, values.length);
     		// bulk copy from heap arrays if you have them
     		MemorySegment.copy(values, 0, memorySegment, ValueLayout.JAVA_FLOAT, 0, values.length);
     	}
@@ -84,7 +82,10 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
         }
         return FloatVector.fromArray(species, values, index);
     }
-    
+    @Override
+    public Arena getArena() {
+    	return Llama3.autoArena;
+    }
 	@Override
 	public MemorySegment getSegment() {
 		return memorySegment;
@@ -117,10 +118,8 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 		for(int i = 0; i < vsize; i++)
 			values[i]= in.readFloat();
 	 	if(FloatTensor.USE_CUDA) {
-    		Arena arena = Arena.ofShared(); // proven FFI passable
-    		//Arena arena = Arena.ofAuto(); // gc trackable
     		// allocate off-heap space for headSize floats
-    		memorySegment = arena.allocate(ValueLayout.JAVA_FLOAT, values.length);
+    		memorySegment = getArena().allocate(ValueLayout.JAVA_FLOAT, values.length);
     		// bulk copy from heap arrays if you have them
     		MemorySegment.copy(values, 0, memorySegment, ValueLayout.JAVA_FLOAT, 0, values.length);
     	}
@@ -161,6 +160,11 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     	long offBytes = elementOffset * Float.BYTES;
     	long lenBytes = elementCount * Float.BYTES;
     	return memorySegment.asSlice(offBytes, lenBytes);
+    }
+    
+    @Override
+    public String toString() {
+    	return Arrays.toString(values);
     }
 }
 

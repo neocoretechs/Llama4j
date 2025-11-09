@@ -36,6 +36,11 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
         return size;
     }
 
+    @Override
+    public Arena getArena() {
+    	return Llama3.autoArena;
+    }
+    
 	@Override
 	public MemorySegment getSegment() {
 		return memorySegment;
@@ -86,12 +91,12 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
     }
     
     @Override
-    public float dot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		//return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
       		try {
-    			return cuBLASdotSlice(cublasHandle, this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    			return cuBLASdotSlice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		} catch (Throwable e) {
     			if (FloatTensor.USE_VECTOR_API) {
     				return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
@@ -161,7 +166,7 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
 	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
 		size = in.readInt();
 		long bs = in.readLong();
-		memorySegment = Arena.ofAuto().allocate(bs, 1);
+		memorySegment = getArena().allocate(bs, 1);
 		for(int i = 0; i < bs; i++)
 			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
 	}

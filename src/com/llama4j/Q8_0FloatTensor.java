@@ -42,6 +42,10 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
 		return memorySegment.asSlice(offSet1, offSet2);
 	}
 	
+    @Override
+    public Arena getArena() {
+    	return Llama3.autoArena;
+    }
 	@Override
 	public MemorySegment getSegment() {
 		return memorySegment;
@@ -76,12 +80,12 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     public static final ValueLayout.OfShort JAVA_SHORT_LE = ValueLayout.JAVA_SHORT.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     @Override
-    public float dot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {
     		try {
      			//float result1, result2;
       			//try (Timer timer = Timer.log("Q8 cublas dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-      				return cuBLASdotSlice(cublasHandle, this, thisOffset, that, thatOffset, size);
+      				return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
       			//}
       			//try (Timer timer = Timer.log("Q8 scalar dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
       			//   	if (FloatTensor.USE_VECTOR_API) {

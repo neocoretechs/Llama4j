@@ -66,6 +66,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     public abstract float getFloat(int index);
     public abstract void setFloat(int index, float value);
     abstract FloatVector getFloatVector(VectorSpecies<Float> species, int offset);
+    public abstract Arena getArena();
     public abstract MemorySegment asSlice(long offSet1, long offSet2);
     public abstract MemorySegment getSegment();
     public abstract long getOffsetBytes(long offset);
@@ -83,7 +84,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         }
         return result;
     }
-    public float dot(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
+    public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
       	if(USE_CUDA) {
     		//boolean success = getDevice().upload() && that.getDevice().upload();
     		//if(success) {
@@ -92,7 +93,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
       		try {
       			//float result1, result2;
       			//try (Timer timer = Timer.log("cublas dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-				return cuBLASdotSlice(cublasHandle, this, thisOffset, that, thatOffset, size);
+				return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
       			//}
     			//try (Timer timer = Timer.log("scalar dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
 				//result2 = scalarDot(this, thisOffset, that, thatOffset, size);
@@ -103,7 +104,6 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     			//return result1;
 			} catch (Throwable e) {
 				System.out.println("FloatTensor dot fail:"+e+" falling back to scalarDot");
-	 	        Llama3.cublasHandlePool.release(cublasHandle);
 				return scalarDot(this, thisOffset, that, thatOffset, size);
 			}
       	}
@@ -113,7 +113,6 @@ public abstract class FloatTensor implements Externalizable, Comparable {
      * If we are here, we have to slice the MemorySegment, if we are in a quantized type, we send the whole thing.
      * It is the responsibility of the subclass NOT to slice it, but to send the entire segment, as we are using 
      * math designed to work on the entire segment in the native methods.
-     * @param cublasHandle the handle for CUBLAS
      * @param thisOffset offset into this segment
      * @param that the other segment
      * @param thatOffset offset into the other segment
@@ -121,43 +120,38 @@ public abstract class FloatTensor implements Externalizable, Comparable {
      * @return the result of the sdot
      * @throws Throwable native method fail code
      */
-    public static float cuBLASdotSlice(long cublasHandle, FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
+    public static float cuBLASdotSlice(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
     	MemorySegment qSeg;
     	MemorySegment kSeg;
     	if(DEBUG)
     		System.out.printf("%s thread:%s CUBLAS handle:%x thisOffset:%d thatOffset:%d size:%d%n", 
-    				thiz.getClass().getName(), Thread.currentThread().getName(), cublasHandle, thisOffset, thatOffset, size);
+    				thiz.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size);
 		  boolean released = false;
-    	try {
     	switch(thiz) {
     	case Q8_0FloatTensor q8 -> {
     		qSeg = thiz.getSegment();
     		kSeg = that.getSegment();
-    		float r = (float) Llama3.sdotSliceQ8Handle.invokeExact(cublasHandle,qSeg, kSeg, size, GGMLType.Q8_0.getBlockSize(),
+    		float r = (float) Llama3.sdotSliceQ8Handle.invokeExact(qSeg, kSeg, size, GGMLType.Q8_0.getBlockSize(),
     				thisOffset,GGMLType.Q8_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
-    		Llama3.cublasHandlePool.release(cublasHandle);
     		return r;
     	}
     	case Q4_0FloatTensor q4 -> {
     		qSeg = thiz.getSegment();
     		kSeg = that.getSegment();
-    		float r = (float) Llama3.sdotSliceQ4Handle.invokeExact(cublasHandle, qSeg, kSeg, size, GGMLType.Q4_0.getBlockSize(),
+    		float r = (float) Llama3.sdotSliceQ4Handle.invokeExact(qSeg, kSeg, size, GGMLType.Q4_0.getBlockSize(),
     				thisOffset, GGMLType.Q4_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
-    		Llama3.cublasHandlePool.release(cublasHandle);
     		return r;
     	}
     	case F16FloatTensor F16 -> { 
     		qSeg = thiz.getSegment();
     		kSeg = that.getSegment();
-    		float r = (float) Llama3.sdotSliceF16Handle.invokeExact(cublasHandle, qSeg, kSeg, size,thisOffset, GGMLType.F16.getTypeSize());
-    		Llama3.cublasHandlePool.release(cublasHandle);
+    		float r = (float) Llama3.sdotSliceF16Handle.invokeExact(qSeg, kSeg, size,thisOffset, GGMLType.F16.getTypeSize());
     		return r;
     	}
     	case  BF16FloatTensor BF16 -> {
     		qSeg = thiz.getSegment();
     		kSeg = that.getSegment();
-    		float r = (float) Llama3.sdotSliceBF16Handle.invokeExact(cublasHandle, qSeg, kSeg, size,thisOffset, GGMLType.BF16.getTypeSize());
-    		Llama3.cublasHandlePool.release(cublasHandle);
+    		float r = (float) Llama3.sdotSliceBF16Handle.invokeExact(qSeg, kSeg, size,thisOffset, GGMLType.BF16.getTypeSize());
     		return r;
     	}
     	default -> {
@@ -165,47 +159,89 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		kSeg   = that.asSlice(thatOffset, size);
     		assert qSeg.byteSize() == (long) size * Float.BYTES;
     		assert kSeg.byteSize() == (long) size * Float.BYTES;
-    		float result = (float) Llama3.sdotSliceHandle.invokeExact(cublasHandle, qSeg, kSeg, size);
-    		Llama3.cublasHandlePool.release(cublasHandle);
+    		float result = (float) Llama3.sdotSliceHandle.invokeExact(qSeg, kSeg, size);
     		//System.out.println(result);
     		return result;
     	}
+    }
+    }
+    
+    public void allocDevice() {
+    	devicePtr = allocDevice(getSegment().byteSize());
+    }
+    
+    public void freeDevice() {
+    	if(isOnDevice()) {
+    		DeviceMemoryLedger.release(getSegment().byteSize());
+    		try {
+				Llama3.cublasFreeHandle.invokeExact(devicePtr);
+			} catch (Throwable e) {
+			}
+    		devicePtr = 0L;
     	}
-    } finally {
-        if (!released) {
-            Llama3.cublasHandlePool.release(cublasHandle);
-            released = true;
-        }
     }
-
+    
+    public static long allocDevice(long bytes) {
+    	if(DeviceMemoryLedger.tryReserve(bytes)) {
+    		try {
+				return (long) Llama3.allocDevicePtr.invokeExact(bytes);
+			} catch (Throwable e) {
+				e.printStackTrace();
+				DeviceMemoryLedger.onAllocationFailure();
+			}
+    	}
+		return 0L;
     }
+    
     /**
      * every time you need to pass a device buffer into a downcall, 
      * call devSeg(ptr, size, arena) and get a properly bounded MemorySegment. 
      * avoids repeating FFI Address/reinterpret 
-     * @param devicePtr
-     * @param bytes
-     * @param arena
+     * @param devicePtr The GPU device pointer from cudaMalloc
+     * @param bytes the number of bytes in the segment
+     * @param arena The Arena that allocated the MemorySegment
      * @return
      */
     static MemorySegment devSeg(long devicePtr, long bytes, Arena arena) {
-    	   MemorySegment base = MemorySegment.ofAddress(devicePtr);
-    	   return base.reinterpret(bytes, arena, null);
+    	if(devicePtr == 0L)
+    		throw new RuntimeException("devicePtr is unallocated for devSeg call of "+bytes+" bytes using Arena "+arena);
+    	MemorySegment base = MemorySegment.ofAddress(devicePtr);
+    	return base.reinterpret(bytes, arena, null);
     }
     public long devicePtrOr0() {
-        return devicePtr;
+        return isOnDevice() ? devicePtr : 0L;
     }
     public boolean isOnDevice() {
         return devicePtr != 0L;
     }
-    static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) throws Throwable {
-        try (Arena arena = Arena.ofAuto()) {
-            MemorySegment xDev  = devSeg(x.devicePtrOr0(),      (long) size * Float.BYTES, arena);
-            MemorySegment wDev  = devSeg(weight.devicePtrOr0(), (long) size * Float.BYTES, arena);
-            MemorySegment oDev  = devSeg(out.devicePtrOr0(),    (long) size * Float.BYTES, arena);
-            Llama3.launchRmsnorm.invokeExact(xDev, wDev, oDev, size, eps);
-        }
+    public void copyHostToDevice() {
+    	MemorySegment seg = getSegment();
+    	try {
+    		Llama3.copyHostToDeviceMH.invokeExact(seg, devicePtr, seg.byteSize());
+    	} catch (Throwable e) {
+    		e.printStackTrace();
+    	}
     }
+    public void copyDeviceToHost() {
+    	MemorySegment seg = getSegment();
+    	seg = devSeg(devicePtrOr0(), (long)size(), getArena());
+    	try {
+    		if(isOnDevice())
+    			Llama3.copyDeviceToHostMH.invokeExact(devicePtr, seg, (long)size());
+    		else
+    			throw new RuntimeException("Device is not initialized for segment:"+getSegment()+" tensor:"+this);
+    	} catch (Throwable e) {
+    		e.printStackTrace();
+    	}
+    }
+
+    static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) throws Throwable {
+    	MemorySegment xDev  = devSeg(x.devicePtrOr0(),      (long) size * Float.BYTES, x.getArena());
+        MemorySegment wDev  = devSeg(weight.devicePtrOr0(), (long) size * Float.BYTES, weight.getArena());
+        MemorySegment oDev  = devSeg(out.devicePtrOr0(),    (long) size * Float.BYTES, out.getArena());
+        Llama3.launchRmsnorm.invokeExact(xDev, wDev, oDev, size, eps);
+    }
+    
     public static FloatTensor[] loadArrayOfF32Tensors(int size, IntFunction<GGMLTensorEntry> get) {
         FloatTensor[] array = new FloatTensor[size];
         for (int i = 0; i < size; i++) {
@@ -215,8 +251,9 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         }
         return array;
     }
+    
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
-        Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(Llama3.cublasHandlePool.acquire(), i * dim1, that, 0, dim1)));
+        Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(i * dim1, that, 0, dim1)));
     }
     void matmul(int context, FloatTensor[] that, FloatTensor[] out, int dim0, int dim1) {
         if (that.length != out.length) {
@@ -225,7 +262,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         Parallel.parallelForLong(0, dim0 * context, ti -> {
             int idxArr = (int) (ti / dim0);
             int i = (int) (ti % dim0);
-            out[idxArr].setFloat(i, dot(Llama3.cublasHandlePool.acquire(), i * dim1, that[idxArr], 0, dim1)); 
+            out[idxArr].setFloat(i, dot(i * dim1, that[idxArr], 0, dim1)); 
         });
     }
 
@@ -352,8 +389,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     static float cosineSimilarity(FloatTensor a, FloatTensor b) {
-    	long handle = Llama3.cublasHandlePool.acquire();
-    	float dotProduct = a.dot(handle ,0, b, 0, a.size());
+    	float dotProduct = a.dot(0, b, 0, a.size());
     	DoubleAdder aNormAdder = new DoubleAdder();
     	DoubleAdder bNormAdder = new DoubleAdder();
     	Parallel.parallelFor(0, a.size(), t -> {
@@ -362,7 +398,6 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	});
     	float aNorm = (float) Math.sqrt(aNormAdder.sum());
     	float bNorm = (float) Math.sqrt(bNormAdder.sum());
-    	Llama3.cublasHandlePool.release(handle);
     	return (dotProduct / (aNorm * bNorm));
     }
     
@@ -389,11 +424,9 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 		ResultScalarPool.Scalar s = ResultScalarPool.acquire();
 		long dX = this.devicePtr() + (long)thisOffset * Float.BYTES;
 		long dY = that.devicePtr() + (long)thatOffset * Float.BYTES;
-
 		int rc = Gemm.sdotDevice(cublasHandle, size, dX, 1, dY, 1, s.dPtr);
 		if (rc != 0) 
 			throw new RuntimeException("sdotDevice rc=" + rc);
-
 		// Copy back one float
 		s.download(); // copies device->host for the one float
 		float out = s.get();

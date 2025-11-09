@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import com.llama4j.Llama3;
 
-public class NativeLoader {
+public final class NativeLoader {
     private static volatile boolean loaded = false;
     private NativeLoader() {}
     private enum LibraryState {
@@ -69,7 +69,6 @@ public class NativeLoader {
 				lookup.find("sdotSlice").get(),
 				FunctionDescriptor.of(
 						ValueLayout.JAVA_FLOAT,   // return float
-						ValueLayout.JAVA_LONG,	  // cublasHandle
 						ValueLayout.ADDRESS,      // const float* q
 						ValueLayout.ADDRESS,      // const float* k
 						ValueLayout.JAVA_INT      // headSize
@@ -80,7 +79,6 @@ public class NativeLoader {
 				lookup.find("sdotSliceQ8").get(),
 				FunctionDescriptor.of(
 						ValueLayout.JAVA_FLOAT,   // return float
-						ValueLayout.JAVA_LONG,	  // cublasHandle
 						ValueLayout.ADDRESS,      // const float* q
 						ValueLayout.ADDRESS,      // const float* k
 						ValueLayout.JAVA_INT,     // headSize
@@ -95,7 +93,6 @@ public class NativeLoader {
 				lookup.find("sdotSliceQ4").get(),
 				FunctionDescriptor.of(
 						ValueLayout.JAVA_FLOAT,   // return float
-						ValueLayout.JAVA_LONG,	  // cublasHandle
 						ValueLayout.ADDRESS,      // const float* q
 						ValueLayout.ADDRESS,      // const float* k
 						ValueLayout.JAVA_INT,     // headSize
@@ -110,7 +107,6 @@ public class NativeLoader {
 				lookup.find("sdotSliceF16").get(),
 				FunctionDescriptor.of(
 						ValueLayout.JAVA_FLOAT,   // return float
-						ValueLayout.JAVA_LONG,	  // cublasHandle
 						ValueLayout.ADDRESS,      // const float* q
 						ValueLayout.ADDRESS,      // const float* k
 						ValueLayout.JAVA_INT,     // headSize
@@ -123,7 +119,6 @@ public class NativeLoader {
 				lookup.find("sdotSliceBF16").get(),
 				FunctionDescriptor.of(
 						ValueLayout.JAVA_FLOAT,   // return float
-						ValueLayout.JAVA_LONG,	  // cublasHandle
 						ValueLayout.ADDRESS,      // const float* q
 						ValueLayout.ADDRESS,      // const float* k
 						ValueLayout.JAVA_INT,     // headSize
@@ -136,19 +131,21 @@ public class NativeLoader {
 				FunctionDescriptor.of(
 						ValueLayout.JAVA_LONG  // return long handle
 						));
+		System.out.println("cublasHandle:"+Llama3.cublasGetHandle);
 		Llama3.cublasFreeHandle = linker.downcallHandle(
 				lookup.find("cublasHandleDestroy").get(),
 				FunctionDescriptor.ofVoid(
 						// return void
 						ValueLayout.JAVA_LONG  // pass long handle
 						));
+		System.out.println("cublasHandleDestroy:"+Llama3.cublasFreeHandle);
 		Llama3.cudaGetMemInfo = linker.downcallHandle(
 				lookup.find("cudaGetMemInfo").get(),
-				FunctionDescriptor.of(
-						ValueLayout.JAVA_INT,   // return int
+				FunctionDescriptor.ofVoid(
 						ValueLayout.ADDRESS,    // size_t* free
 						ValueLayout.ADDRESS     // size_t* total
 						));
+		System.out.println("cudaGetMemInfo:"+Llama3.cudaGetMemInfo);
 		// Signature: void launch_rmsnorm_fp32_rowmajor(const float* x, const float* weight, float* out, int size, float eps)
 		Llama3.launchRmsnorm = linker.downcallHandle(
 				lookup.find("launch_rmsnorm_fp32_rowmajor").get(),
@@ -160,16 +157,23 @@ public class NativeLoader {
 						ValueLayout.JAVA_FLOAT  // eps
 						)
 				);
+		System.out.println("launch_rmsnorm_fp32_rowmajor:"+Llama3.launchRmsnorm);
+		// qk_scores(const float* __restrict__ Q,      // [nHeads*headSize]
+		//	    const uint8_t * __restrict__ Kraw, // packed keys, Kcache, MemorySegment possibly quantized
+		//	    float* __restrict__ Att,          // [nHeads*contextLen]
+		//	    int nHeads, int headSize, int contextLen,
+		//	    int kvDim, int kvMul, int tMax, int format, int blockSize, int typeSize, int headerBytes)
 		Llama3.launchQK = linker.downcallHandle(
 				lookup.find("launch_qk_scores_fp32_rowmajor").get(),
 				FunctionDescriptor.ofVoid(
-						ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, // Q, K, S
+						ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, // Q, K, S
 						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // nHeads, headSize, contextLen
 						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // kvDim, kvMul, tMaxInclusive
-						ValueLayout.JAVA_FLOAT, // invSqrtHeadSize
-						ValueLayout.JAVA_LONG   // layerBaseOffset (size_t)
+						ValueLayout.JAVA_INT, // format
+						ValueLayout.JAVA_INT ,ValueLayout.JAVA_INT,ValueLayout.JAVA_INT  // blocksize, typesize, headerbytes
 						)
 				);
+		System.out.println("launch_qk_scores_fp32_rowmajor:"+Llama3.launchQK);
 		Llama3.launchSoftmax = linker.downcallHandle(
 				lookup.find("launch_row_softmax_fp32").get(),
 				FunctionDescriptor.ofVoid(
@@ -178,14 +182,46 @@ public class NativeLoader {
 						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT  // ldS, ldA
 						)
 				);
+		System.out.println("launch_row_softmax_fp32:"+Llama3.launchSoftmax);
 		Llama3.launchAV = linker.downcallHandle(
-				lookup.find("launch_av_weighted_sum_fp32_rowmajor").get(),
-				FunctionDescriptor.ofVoid(
-						ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, // Q, K, S
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // nHeads, headSize, contextLen
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // kvDim, kvMul, tMaxInclusive
-						ValueLayout.JAVA_LONG // layerBaseOffset (size_t)
-						)
-				);
+			    lookup.find("launch_attention_av_weighted_sum").get(),
+			    FunctionDescriptor.ofVoid(
+			        ValueLayout.ADDRESS, // attTok
+			        ValueLayout.ADDRESS, // vCacheRaw quantized/raw bytes for V: [contextLen*kvTypeSizeTotal]
+			        ValueLayout.ADDRESS, // xbTok [nHeads*headSize]
+			        //int nHeads, int headSize, int kvDim, int kvMul,int contextLen, int tMax,
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+			        // Quantization params for V. vBlockSize elements per quant block, vTypeSize bytes per block (header + payload), vheaderBytes bytes before payload, format: 1 for Q8, 2 for Q4, 3 for F16, 4 for BF16, 5 for F32
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT
+			    )
+			);
+		System.out.println("launch_attention_av_weighted_sum:"+Llama3.launchAV);
+	    Llama3.allocDevicePtr = linker.downcallHandle(
+		        lookup.find("allocDevicePtr").get(),
+		        FunctionDescriptor.of(ValueLayout.JAVA_LONG, // uint64_t device ptr
+		        					ValueLayout.JAVA_LONG) // size 
+		    );
+		System.out.println("allocDevicePtr:"+Llama3.allocDevicePtr);
+	    Llama3.freeDevicePtr = linker.downcallHandle(
+		        lookup.find("freeDevicePtr").get(),
+		        FunctionDescriptor.ofVoid(ValueLayout.JAVA_LONG) // uint64_t device ptr
+		    );
+		System.out.println("freeDevicePtr:"+Llama3.freeDevicePtr);
+		 // copyHostToDevice
+	    Llama3.copyHostToDeviceMH = linker.downcallHandle(
+	        lookup.find("copyHostToDevice").get(),
+	        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS,   // uint8_t* tensor
+	                              ValueLayout.JAVA_LONG, // uint64_t device ptr
+	                              ValueLayout.JAVA_LONG) // int bytes
+	    );
+		System.out.println("copyHostToDevice:"+Llama3.copyHostToDeviceMH);
+	    // copyDeviceToHost
+	    Llama3.copyDeviceToHostMH = linker.downcallHandle(
+	        lookup.find("copyDeviceToHost").get(),
+	        FunctionDescriptor.ofVoid(ValueLayout.JAVA_LONG, // uint64_t device pt
+	                                  ValueLayout.ADDRESS,   // uint8_t* tensor
+	                                  ValueLayout.JAVA_LONG) // size_t bytes
+	    );
+		System.out.println("copyDeviceToHost:"+Llama3.copyDeviceToHostMH);
 	}
 }

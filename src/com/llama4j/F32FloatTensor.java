@@ -73,7 +73,11 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 		long blocks     = (endBlock - startBlock + 1);
 		return blocks * GGMLType.F32.getTypeSize();
 	}
-
+	
+    @Override
+    public Arena getArena() {
+    	return Llama3.autoArena;
+    }
 	@Override
 	public MemorySegment getSegment() {
 		return memorySegment;
@@ -82,9 +86,7 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
     public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
         MemorySegment qSeg = this.sliceElements(thisOffset, size);
         MemorySegment kSeg = that.sliceElements(thatOffset, size);
-        float result = (float) Llama3.sdotSliceHandle.invokeExact(
-            qSeg, kSeg, size
-        );
+        float result = (float) Llama3.sdotSliceHandle.invokeExact(qSeg, kSeg, size);
         return result;
     }
     
@@ -99,7 +101,7 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
 		size = in.readInt();
 		long bs = in.readLong();
-		memorySegment = Arena.ofAuto().allocate(bs, 1);
+		memorySegment = getArena().allocate(bs, 1);
 		for(int i = 0; i < bs; i++)
 			memorySegment.set(ValueLayout.JAVA_BYTE, i, (byte)(in.read() & 0xFF));
 	}

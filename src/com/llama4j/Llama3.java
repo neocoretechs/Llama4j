@@ -27,7 +27,9 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -69,6 +71,7 @@ import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
 
 import com.neocoretechs.rocksack.Alias;
+import com.llama4j.Llama.Weights;
 import com.llama4j.ffi.CublasHandlePool;
 import com.llama4j.ffi.NativeLoader;
 
@@ -85,7 +88,10 @@ public class Llama3 {
 	public static BufferedWriter outputStream = null;
 	public static PrintWriter output = null;
 	public static FileWriter fileWriter = null;
-	public static CublasHandlePool cublasHandlePool;
+	// Arena
+	public static Arena autoArena = Arena.ofAuto();
+	public static Arena sharedArena = Arena.ofShared();
+	//
     public static MethodHandle sdotSliceHandle;
     public static MethodHandle sdotSliceQ8Handle;
     public static MethodHandle sdotSliceQ4Handle;
@@ -98,6 +104,11 @@ public class Llama3 {
     public static MethodHandle launchQK;
     public static MethodHandle launchSoftmax;
     public static MethodHandle launchAV;
+	public static MethodHandle copyHostToDeviceMH;
+	public static MethodHandle copyDeviceToHostMH;
+	public static MethodHandle freeDevicePtr;
+	public static MethodHandle allocDevicePtr;
+	
 	public static BufferPool poolHead   = new BufferPool();
 	public static BufferPool poolScalar = new BufferPool();
 
@@ -227,6 +238,37 @@ public class Llama3 {
             }
             if (state == null) {
                 state = model.createNewState(BATCH_SIZE, chatFormat.getBeginOfText());
+                //Weights (static parameters):
+                //	Copy once from host to device.
+                //	Pin them in device memory; never move again unless you reload a model.
+                //	KV cache (attention buffer):
+                //	Allocate full device buffer sized for max sequence length × hidden dim.
+                //	Copy initial state (empty or seed tokens) once.
+                //	Scratch/workspace buffers:
+                //	Allocate on device for fused ops (matmul, softmax, reductions).
+                //	No host copies; reused every turn.
+                // copy to device if GPU
+                if(FloatTensor.USE_CUDA) {
+                	try (Timer timer = Timer.log("Weights to device..")) {
+                		// send weights
+                		log.info("Weights wo="+model.weights().wo.length);
+                		for(int i = 0; i < model.weights().wo.length; i++) {
+                     		model.weights().wo[i].allocDevice();
+                     		model.weights().wo[i].copyHostToDevice();
+                		}
+                	}
+                 	try (Timer timer = Timer.log("State to device..")) {
+                 		log.info("State.q="+state.q.length);
+                		for(int i = 0; i < state.q.length; i++) {
+                			state.q[i].allocDevice();
+                			state.q[i].copyHostToDevice();
+                		}
+                		for(int i = 0; i < state.att.length; i++) {
+                       		state.att[i].allocDevice();
+                			state.att[i].copyHostToDevice();
+                		}
+                	}
+                }
             }
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
             conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
@@ -569,7 +611,6 @@ public class Llama3 {
         	}
         }
         NativeLoader.loadMethods();
-        Llama3.cublasHandlePool = new CublasHandlePool(24);
         Llama model = AOT.tryUsePreLoaded(options.modelPath(), options.maxTokens());
         if(model == null)
         	model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
@@ -701,8 +742,7 @@ final class GGUF {
     }
 
     public static Map<String, GGMLTensorEntry> loadTensors(FileChannel fileChannel, long tensorDataOffset, Map<String, GGUFTensorInfo> tensorInfos) throws IOException {
-        Arena arena = Arena.ofAuto();
-        MemorySegment tensorData = fileChannel.map(FileChannel.MapMode.READ_ONLY, tensorDataOffset, fileChannel.size() - tensorDataOffset, arena);
+        MemorySegment tensorData = fileChannel.map(FileChannel.MapMode.READ_ONLY, tensorDataOffset, fileChannel.size() - tensorDataOffset, Llama3.autoArena);
         Map<String, GGMLTensorEntry> tensorEntries = HashMap.newHashMap(tensorInfos.size());
         if(Llama3.DISPLAY_METADATA)
         	Llama3.output.println("Begin Tensors:");
@@ -1070,9 +1110,9 @@ final class ModelLoader {
                     if (loadWeights) {
                     	// loadTensors corresponds to getTensorEntries in old version
                         Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
-                        if(FloatTensor.USE_CUDA)
-                        	weights = loadGPT2WeightsGPU(tensorEntries, config);
-                        else
+                        //if(FloatTensor.USE_CUDA)
+                        	//weights = loadGPT2WeightsGPU(tensorEntries, config);
+                        //else
                         	weights = loadGPT2Weights(tensorEntries, config);
                     }
             	} else {
@@ -1673,7 +1713,28 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         final float finalss = ss; // for the lambda
         out.mapWithIndexInPlace(0, size, (value, index) -> weight.get(index) * (finalss * x.getFloat(index)));
     }
-    
+    /**
+     * Each inference turn:<br>
+	 * 1.Input activations (queries/keys/values for new tokens):
+	 * Host to device copy of just the new slice.<br>
+	 * Append directly into the pre‑allocated KV cache on device.
+	 * Avoid re‑copying the whole cache.<br>
+	 * 2.Intermediate activations (layer outputs, hidden states):
+	 * Stay entirely on device.<br>
+ 	 * No host transfers unless debugging/logging.<br>
+ 	 * 3.Fused kernel execution:<br>
+	 * Runs with resident weights + updated KV cache + scratch buffers.
+	 * All math stays on device.<br>
+	 * Output (logits / final predictions):<br>
+	 * Device to host copy of just the final result needed by the runtime.<br>
+	 * Do not pull intermediate states back unless required.
+     * @param model loaded model with quantized GGUF
+     * @param state current wave of activations
+     * @param tokens token array to this point
+     * @param position 
+     * @param computeLogits
+     * @return Final FloatTensor
+     */
     static FloatTensor forward(Llama model, State state, int[] tokens, int position, boolean computeLogits) {
         // a few convenience variables
         Configuration config = model.configuration();
@@ -1689,7 +1750,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         Parallel.parallelFor(0, nTokens, t ->
             weights.token_embedding_table.copyTo(tokens[t] * dim, state.x[t], 0, dim)
         );
-
+     
         // forward all the layers
         for (int l = 0; l < config.numberOfLayers; l++) {
             // attention rmsnorm
@@ -1735,42 +1796,18 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 state.idxPrevBlock = nTokens - 1;
                 return null;
             }
-            //
-            //----- GPU multihead attention. iterate over all heads 
-            //List<CompletableFuture<Void>> gpuQueue = new ArrayList<>();
-            /*int totalHeads = nTokens * config.numberOfHeads;
-            int hiddenSize = 4096;                  // from model config
-            int H = state.q.length;                 // number of heads
-            int d = hiddenSize / H;                 // per-head width (e.g. 4096/32 = 128)
-
-            // infer how many rows (tokens) are in each head tensor
-            int rowsQ = state.q[0].size() / d;
-            int rowsK = state.k[0].size() / d;
-            int rowsV = state.v[0].size() / d;
-            // for a single-step test, you’ll see rowsQ = rowsK = rowsV = 1
-            int Tq = 512;//rowsQ;
-            int Tk = 512;//rowsK;
-            if(DEBUG )
-            	System.out.printf("Attn: Tq=%d, Tk=%d, d=%d, H=%d%n", Tq, Tk, d, H);
-            Attn attn = new Attn(Llama3.cublasHandle, Tq, Tk, d, H);
-            try {
-                attn.packHeads(state.q, state.k, state.v);
-                int rc = attn.attention();
-                if (rc != 0) {
-                    throw new RuntimeException("attentionBatchedHeads rc=" + rc);
-                }
-                attn.unpackHeads(state.xb);
-            } finally {
-                attn.close();
+            if(FloatTensor.USE_CUDA) {
+            	try (Timer timer = Timer.log("KV cache upload layer:"+l+" k="+state.keyCache[curLayer].size()+" v="+state.valueCache[curLayer].size(),TimeUnit.MICROSECONDS)) {
+            	state.keyCache[curLayer].allocDevice();
+        		state.keyCache[curLayer].copyHostToDevice();
+              	state.valueCache[curLayer].allocDevice();
+            	state.valueCache[curLayer].copyHostToDevice();
+            	}
             }
-            //float[] f = new float[state.xb[0].size()];
-            //state.xb[0].exportSlice(f, 0, 0, state.xb[0].size());
-            //System.out.println("layer:"+l+"="+Arrays.toString(f));
-            */
-            
             // original multihead attention. iterate over all heads
       		//try (Timer timer = Timer.log("CPU Multihead Attn layer:"+l,TimeUnit.MICROSECONDS)) {
-            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+            //Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+            for(long ht = 0; ht < ((long) nTokens * (long) config.numberOfHeads); ht++) {
                 int token = (int) (ht / config.numberOfHeads);
                 int h = (int) (ht % config.numberOfHeads);
                 // get the query vector for this head
@@ -1780,16 +1817,37 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 // float* att = s.att + h * config.seq_len;
                 int attOffset = h * config.contextLength;
                 // iterate over all timesteps, including the current one
-               for (int t = 0; t <= position + token; t++) {
+                //if(FloatTensor.USE_CUDA) {
+	          	ArrayFloatTensor testTensor = null;
+                	try {
+						Llama3.launchQK.invokeExact(state.q[token].devicePtrOr0(), state.keyCache[curLayer].devicePtrOr0(), state.att[token].devicePtrOr0(),
+							config.numberOfHeads, headSize, config.contextLength, kvDim, kvMul, (position+token), 1, 
+							GGMLType.Q8_0.getBlockSize(),GGMLType.Q8_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
+			          	state.att[token].copyDeviceToHost();
+			          	testTensor = (ArrayFloatTensor)ArrayFloatTensor.allocate(state.att[token].size());
+						state.att[token].copyTo(0, testTensor, 0, state.att[token].size());
+					} catch (Throwable e) {
+						throw new RuntimeException(e);
+					}
+                //} else {
+                	for (int t = 0; t <= position + token; t++) {
                     // get the key vector for this head and at this timestep
                     // float* k = s.key_cache + loff + t * dim + h * headSize;
                     int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
                     // calculate the attention score as the dot product of q and k
-                    float score = state.q[token].dot(Llama3.cublasHandlePool.acquire(), qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+                    float score = state.q[token].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
                     score /= sqrtHeadSize;
                     // save the score to the attention buffer
                     state.att[token].setFloat(attOffset + t, score);
-                }
+                	}    
+                //}
+                	if(testTensor.compareTo(state.att[token]) != 0) {
+                		System.out.print("Tensors dont match:");
+                		for(int x = 0; x < state.att[token].size(); x++) {
+                			if(state.att[token].getFloat(x) != testTensor.getFloat(x))
+                				System.out.println(x+".) "+state.att[token].getFloat(x)+" | "+testTensor.getFloat(x));
+                		}
+                	}
                 // softmax the scores to get attention weights, from 0..position inclusively
                 state.att[token].softmaxInPlace(attOffset, position + token + 1);
                 // weighted sum of the values, store back into xb
@@ -1806,67 +1864,9 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     // accumulate the weighted value into xb
                     state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
                 }
-            });
-      		//}
+            //});
+      		}
             //----end original multihead attention
-            
-            /*---attempted bulk processing attention
-            int heads = config.numberOfHeads;
-            int d = headSize;
-            final int H = heads;
-            final int D = d;
-            final int TQ = nTokens;
-            final int TK = position + nTokens; // fixed context horizon for this batch
-            // Prepare inputs (fill with your model-projected Q/K/V)
-            float[] Q = new float[H * TQ * D];
-            float[] K = new float[H * TK * D];
-            float[] V = new float[H * TK * D];
-            // Pack Q: per token, per head
-            for (int t = 0; t < TQ; t++) {
-            	for (int h = 0; h < H; h++) {
-            		int qOffset = h * headSize;
-            		float[] qVec = state.q[t].exportSlicePooled(Llama3.poolHead, qOffset, headSize);
-            		int dst = h * (TQ * D) + t * D;
-            		System.arraycopy(qVec, 0, Q, dst, D);
-            	}
-            }
-            // Pack K/V from cache across time 0..TK-1 (or your window start..end)
-            for(int u = 0; u < TK; u++) {
-            	for(int h = 0; h < H; h++) {
-            		int kvHeadBase = (h / kvMul) * headSize; // shared KV head group
-            		int keyCacheOffset = u * kvDim + kvHeadBase;
-            		float[] kVec = state.keyCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
-            		float[] vVec = state.valueCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
-            		int kd = h * (TK * D) + u * D;
-            		System.arraycopy(kVec, 0, K, kd, D);
-            		System.arraycopy(vVec, 0, V, kd, D);
-            	}
-            }
-            Attn ctx = new Attn(Llama3.cublasHandle, 1, heads, TQ, TK, d);
-            AttentionRunner.Config cfg = new AttentionRunner.Config(heads, d, TQ, TK);
-            float[] O = AttentionRunner.run(Llama3.cublasHandle, ctx, cfg, Q, K, V);
-  
-            // Scatter O back into state.xb per token
-            for(int t = 0; t < TQ; t++) {
-            	int base = t * heads * d;
-            	int stride = heads * d;
-            	for(int j = 0; j < stride; j++) {
-            	   state.xb[t].setFloat(j, O[base + j]);
-            	}
-            }
-            ctx.close();
-            
-            // Continue with wo, residual, FFN...
-            if(Llama3.DEBUG) {
-            		long[] mem = Gemm.cudaMemGetInfo();
-            		System.out.println(Thread.currentThread().getName()+" queries="+(Q != null ? Q.length : " queries null!")+
-            			" keys="+(K != null ? K.length : " keys null!")+
-            			" values="+(V != null ? V.length : " values null!")+" headSize="+headSize+" mem free:"+mem[0]+" total:"+mem[1]);
-            }
-    		System.out.println(">>>Layer:"+l+" queries="+(Q != null ? Q.length : " queries null!")+
-        			" keys="+(K != null ? K.length : " keys null!")+
-        			" values="+(V != null ? V.length : " values null!")+" headSize="+headSize);
-        	---end attempted bulk multihead attention*/
             
             /*System.out.println("Parallel matmul print start:");
             Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
@@ -1889,138 +1889,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     //System.out.println(Thread.currentThread().getName()+"|t loop (token, attOffset, t) float a = state.att["+token+"].getFloat("+(attOffset + t)+")");
                     //System.out.println(Thread.currentThread().getName()+"|t loop (token xbOffset, curLayer, vOffset, headSize) state.xb["+token+"].saxpyInPlace("+xbOffset+",state.valueCache["+curLayer+"],("+vOffset+","+ headSize+", a)");
                 }
- 
             });
-            System.out.println("Parallel matmul print end");*/
-            
-   
-            // CUBLAS version of above parallel loop
-            /*
-            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
-                final int token = (int) (ht / config.numberOfHeads);
-                final int h     = (int) (ht % config.numberOfHeads);
-                // Offsets for this head
-                final int qOffset   = h * headSize;
-                final int attOffset = h * config.contextLength;
-                // Time horizon for this token (inclusive of current position)
-                final int T = position + token + 1;
-                final ArrayList<float[]> queries = new ArrayList<>(T);
-                final ArrayList<float[]> keys    = new ArrayList<>(T);
-                final ArrayList<float[]> results = new ArrayList<>(T);
-
-                final float[] qVec = state.q[token].exportSlicePooled(Llama3.poolHead, qOffset, headSize);
-                for (int t = 0; t < T; t++) {
-                    final int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
-                    final float[] kVec = state.keyCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
-                    queries.add(qVec);
-                    keys.add(kVec);
-                    results.add(Llama3.poolScalar.acquire(1));
-                }
-                if(Llama3.DEBUG) {
-                	long[] mem = Gemm.cudaMemGetInfo();
-                	System.out.println(Thread.currentThread().getName()+" queries="+(queries != null ? queries.size() : " queries null!")+
-                			" keys="+(keys != null ? keys.size() : " keys null!")+
-                			" results="+(results != null ? results.size() : " results null!")+" headSize="+headSize+" resultSize="+T+" mem free:"+mem[0]+" total:"+mem[1]);
-                }
-                AtomicInteger retCode = new AtomicInteger();
-                retCode.set(Gemm.matrixDotProductF16Batch(Llama3.cublasHandle, 1, headSize, queries, headSize, 1, keys, results, T));
-                if(retCode.get() != 0) {
-    				throw new RuntimeException("matrixDotProductFBatch returned JNI error code"+retCode.get());
-    			}
-                // 3) Write attention scores and apply scaling
-                for (int t = 0; t < T; t++) {
-                	//System.out.println("Results "+t+"+.)="+Arrays.toString(results.get(t)));
-                    final float score = results.get(t)[0] / sqrtHeadSize;
-                    state.att[token].setFloat(attOffset + t, score);
-                }
-                state.att[token].softmaxInPlace(attOffset, T);
-                // 4) Weighted sum over values → xb
-                final int xbOffset = h * headSize;
-                state.xb[token].fillInPlace(xbOffset, headSize, 0f);
-                for (int t = 0; t < T; t++) {
-                    final int vOffset = t * kvDim + (h / kvMul) * headSize;
-                    final float a = state.att[token].getFloat(attOffset + t);
-                    state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
-                }
-                Llama3.poolHead.release(qVec);
-                for (float[] k : keys) Llama3.poolHead.release(k);
-                for (float[] r : results) Llama3.poolScalar.release(r);
-            });
-            //---end CUBLAS version*/
-      		
-            // CUBLAS version of above parallel loop with bigger batch 
-            /*AtomicInteger TT = new AtomicInteger(0);
-            final List<float[]> queries = Collections.synchronizedList(new ArrayList<float[]>());
-            final List<float[]> keys    = Collections.synchronizedList(new ArrayList<float[]>());
-            final List<float[]> results = Collections.synchronizedList(new ArrayList<float[]>());
-            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
-                final int token = (int) (ht / config.numberOfHeads);
-                final int h     = (int) (ht % config.numberOfHeads);
-                // Offsets for this head
-                final int qOffset   = h * headSize;
-                final int attOffset = h * config.contextLength;
-                // Time horizon for this token (inclusive of current position)
-                final int T = position + token + 1;
-                TT.getAndAdd(T);
-                final float[] qVec = state.q[token].exportSlicePooled(Llama3.poolHead, qOffset, headSize);
-                for (int t = 0; t < T; t++) {
-                    final int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
-                    final float[] kVec = state.keyCache[curLayer].exportSlicePooled(Llama3.poolHead, keyCacheOffset, headSize);
-                    queries.add(qVec);
-                    keys.add(kVec);
-                    results.add(Llama3.poolScalar.acquire(1));
-                }
-                if(Llama3.DEBUG) {
-                	long[] mem = Gemm.cudaMemGetInfo();
-                	System.out.println(Thread.currentThread().getName()+" queries="+(queries != null ? queries.size() : " queries null!")+
-                			" keys="+(keys != null ? keys.size() : " keys null!")+
-                			" results="+(results != null ? results.size() : " results null!")+" headSize="+headSize+" resultSize="+T+" mem free:"+mem[0]+" total:"+mem[1]);
-                }
-            });
-            AtomicInteger retCode = new AtomicInteger();
-            FloatBuffer fb1 = FloatBuffer.;  
-            ArrayList<float[]> ql = new ArrayList<>(queries);
-            ArrayList<float[]> kl = new ArrayList<>(keys);
-            ArrayList<float[]> rl = new ArrayList<>(results);
-            //System.out.println("Q="+ql.size()+" K="+kl.size()+" R="+rl.size());
-            retCode.set(Gemm.matrixDotProductF(Llama3.cublasHandle, 1, headSize, ql, headSize, 1, kl, rl));
-            if(retCode.get() != 0) {
-            	throw new RuntimeException("matrixDotProductFBatch returned JNI error code"+retCode.get());
-            }
-            for(float[] q : queries) Llama3.poolHead.release(q);
-            for(float[] k : keys) Llama3.poolHead.release(k);
-            //System.out.println("TT = "+TT.get());
-            for(float[] rll: rl)
-            	System.out.println(Arrays.toString(rll));
-            List<float[]> rl2 = Collections.synchronizedList(rl);
-            //Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
-            for(long ht = 0; ht < (long) nTokens * (long) config.numberOfHeads; ht++) {
-                final int token = (int) (ht / config.numberOfHeads);
-                final int h     = (int) (ht % config.numberOfHeads);
-                // Offsets for this head
-                final int attOffset = h * config.contextLength;
-                // Time horizon for this token (inclusive of current position)
-                final int T = position + token + 1;
-                // 3) Write attention scores and apply scaling
-                for (int t = 0; t < T; t++) {
-                	//System.out.println("Results "+t+"+.)="+Arrays.toString(results.get(t)));
-                    final float score = rl2.get(t)[0] / sqrtHeadSize;
-                    state.att[token].setFloat(attOffset + t, score);
-                }
-                state.att[token].softmaxInPlace(attOffset, T);
-                // 4) Weighted sum over values → xb
-                final int xbOffset = h * headSize;
-                state.xb[token].fillInPlace(xbOffset, headSize, 0f);
-                for (int t = 0; t < T; t++) {
-                    final int vOffset = t * kvDim + (h / kvMul) * headSize;
-                    final float a = state.att[token].getFloat(attOffset + t);
-                    state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
-                }
-            //});
-            }
-            for(float[] r : results) Llama3.poolScalar.release(r);
-            //---end CUBLAS version with bigger batch*/
-      		
+            System.out.println("Parallel matmul print end");*/		
     		//try (Timer timer = Timer.log("Final matmul and residual connection layer:"+l,TimeUnit.MICROSECONDS)) {
             // final matmul to get the output of the attention
             weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, dim);
@@ -2155,7 +2025,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     				// float* k = s.key_cache + loff + t * dim + h * headSize;
     				int keyCacheOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
     				// calculate the attention score as the dot product of q and k
-    				float score = state.q[0].dot(Llama3.cublasHandlePool.acquire(), qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+    				float score = state.q[0].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
     				score /= sqrtHeadSize;
     				// save the score to the attention buffer
     				state.att[0].setFloat(attOffset + t, score);
