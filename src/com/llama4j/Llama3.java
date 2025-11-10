@@ -248,7 +248,7 @@ public class Llama3 {
                 //	Allocate on device for fused ops (matmul, softmax, reductions).
                 //	No host copies; reused every turn.
                 // copy to device if GPU
-                if(FloatTensor.USE_CUDA) {
+                //if(FloatTensor.USE_CUDA) {
                 	try (Timer timer = Timer.log("Weights to device..")) {
                 		// send weights
                 		log.info("Weights wo="+model.weights().wo.length);
@@ -268,7 +268,7 @@ public class Llama3 {
                 			state.att[i].copyHostToDevice();
                 		}
                 	}
-                }
+                //}
             }
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
             conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
@@ -1796,14 +1796,14 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 state.idxPrevBlock = nTokens - 1;
                 return null;
             }
-            if(FloatTensor.USE_CUDA) {
+            //if(FloatTensor.USE_CUDA) {
             	try (Timer timer = Timer.log("KV cache upload layer:"+l+" k="+state.keyCache[curLayer].size()+" v="+state.valueCache[curLayer].size(),TimeUnit.MICROSECONDS)) {
             	state.keyCache[curLayer].allocDevice();
         		state.keyCache[curLayer].copyHostToDevice();
               	state.valueCache[curLayer].allocDevice();
             	state.valueCache[curLayer].copyHostToDevice();
             	}
-            }
+            //}
             // original multihead attention. iterate over all heads
       		//try (Timer timer = Timer.log("CPU Multihead Attn layer:"+l,TimeUnit.MICROSECONDS)) {
             //Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
@@ -1819,17 +1819,25 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 // iterate over all timesteps, including the current one
                 //if(FloatTensor.USE_CUDA) {
 	          	ArrayFloatTensor testTensor = null;
+	          	long nanos1 = System.nanoTime();
                 	try {
-						Llama3.launchQK.invokeExact(state.q[token].devicePtrOr0(), state.keyCache[curLayer].devicePtrOr0(), state.att[token].devicePtrOr0(),
-							config.numberOfHeads, headSize, config.contextLength, kvDim, kvMul, (position+token), 1, 
-							GGMLType.Q8_0.getBlockSize(),GGMLType.Q8_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
+                		//launch_qk_scores_fp32_rowmajor(
+                		// const float* Q, const uint8_t* K, float* S,
+                		// int h, int nHeads, int headSize, int contextLength,
+                		// int kvDim, int kvMul, int tMaxInclusive, int tensorSize, float sqrtHeadSize,
+                		// int format, int blockSize, int typeSize, int headerBytes)
+						Llama3.launchQK.invokeExact(state.q[token].devicePtrOr0(), state.keyCache[curLayer].devicePtrOr0(), state.att[token].devicePtrOr0(), 
+							h, config.numberOfHeads, headSize, config.contextLength, kvDim, kvMul, (position+token), state.keyCache[curLayer].size(), sqrtHeadSize,
+							1, GGMLType.Q8_0.getBlockSize(),GGMLType.Q8_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
 			          	state.att[token].copyDeviceToHost();
 			          	testTensor = (ArrayFloatTensor)ArrayFloatTensor.allocate(state.att[token].size());
 						state.att[token].copyTo(0, testTensor, 0, state.att[token].size());
 					} catch (Throwable e) {
 						throw new RuntimeException(e);
 					}
+                nanos1 = System.nanoTime() - nanos1;
                 //} else {
+              	long nanos2 = System.nanoTime();
                 	for (int t = 0; t <= position + token; t++) {
                     // get the key vector for this head and at this timestep
                     // float* k = s.key_cache + loff + t * dim + h * headSize;
@@ -1839,14 +1847,17 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     score /= sqrtHeadSize;
                     // save the score to the attention buffer
                     state.att[token].setFloat(attOffset + t, score);
-                	}    
+                	}
+                    nanos2 = System.nanoTime() - nanos1;
                 //}
                 	if(testTensor.compareTo(state.att[token]) != 0) {
-                		System.out.print("Tensors dont match:");
+                		System.out.println("Tensors dont match size CPU:"+state.att[token].size()+" size GPU:"+testTensor.size()+" offset CPU:"+qOffset+" position+toke:"+(position+token)+" CPU:"+nanos2+" GPU:"+nanos1);
                 		for(int x = 0; x < state.att[token].size(); x++) {
                 			if(state.att[token].getFloat(x) != testTensor.getFloat(x))
                 				System.out.println(x+".) "+state.att[token].getFloat(x)+" | "+testTensor.getFloat(x));
                 		}
+                	} else {
+                		System.out.println("Tensors are the same for token:"+token);
                 	}
                 // softmax the scores to get attention weights, from 0..position inclusively
                 state.att[token].softmaxInPlace(attOffset, position + token + 1);

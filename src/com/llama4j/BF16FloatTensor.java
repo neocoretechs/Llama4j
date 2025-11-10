@@ -92,19 +92,19 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
     
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-    	if(FloatTensor.USE_CUDA) {
+    	//if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		//return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-      		try {
-    			return cuBLASdotSlice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		} catch (Throwable e) {
-    			if (FloatTensor.USE_VECTOR_API) {
-    				return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    			} else {
-    				return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-    			}
-    		}
-    	} else
+      		//try {
+    		//	return cuBLASdotSlice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		//} catch (Throwable e) {
+    			//if (FloatTensor.USE_VECTOR_API) {
+    			//	return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    			//} else {
+    			//	return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+    			//}
+    		//}
+    	//} else
     		if (FloatTensor.USE_VECTOR_API) {
     			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		} else {

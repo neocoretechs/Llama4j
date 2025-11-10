@@ -158,17 +158,17 @@ public final class NativeLoader {
 						)
 				);
 		System.out.println("launch_rmsnorm_fp32_rowmajor:"+Llama3.launchRmsnorm);
-		// qk_scores(const float* __restrict__ Q,      // [nHeads*headSize]
-		//	    const uint8_t * __restrict__ Kraw, // packed keys, Kcache, MemorySegment possibly quantized
-		//	    float* __restrict__ Att,          // [nHeads*contextLen]
-		//	    int nHeads, int headSize, int contextLen,
-		//	    int kvDim, int kvMul, int tMax, int format, int blockSize, int typeSize, int headerBytes)
+		//launch_qk_scores_fp32_rowmajor(
+		// const float* Q, const uint8_t* K, float* S,
+		// int h, int nHeads, int headSize, int contextLength,
+		// int kvDim, int kvMul, int tMaxInclusive, int tensorSize, float sqrtHeadSize,
+		// int format, int blockSize, int typeSize, int headerBytes)
 		Llama3.launchQK = linker.downcallHandle(
 				lookup.find("launch_qk_scores_fp32_rowmajor").get(),
 				FunctionDescriptor.ofVoid(
 						ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, // Q, K, S
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // nHeads, headSize, contextLen
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // kvDim, kvMul, tMaxInclusive
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // h, nHeads, headSize, contextLen
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_FLOAT,// kvDim, kvMul, tMaxInclusive, tensorSize, sqrtSize
 						ValueLayout.JAVA_INT, // format
 						ValueLayout.JAVA_INT ,ValueLayout.JAVA_INT,ValueLayout.JAVA_INT  // blocksize, typesize, headerbytes
 						)
