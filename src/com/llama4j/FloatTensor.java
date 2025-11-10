@@ -93,7 +93,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
       		try {
       			//float result1, result2;
       			//try (Timer timer = Timer.log("cublas dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-				return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
+				//return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
       			//}
     			//try (Timer timer = Timer.log("scalar dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
 				//result2 = scalarDot(this, thisOffset, that, thatOffset, size);
@@ -174,7 +174,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	if(isOnDevice()) {
     		DeviceMemoryLedger.release(getSegment().byteSize());
     		try {
-				Llama3.cublasFreeHandle.invokeExact(devicePtr);
+				Llama3.freeDevicePtr.invokeExact(devicePtr);
 			} catch (Throwable e) {
 			}
     		devicePtr = 0L;

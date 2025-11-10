@@ -139,6 +139,9 @@ public final class NativeLoader {
 						ValueLayout.JAVA_LONG  // pass long handle
 						));
 		System.out.println("cublasHandleDestroy:"+Llama3.cublasFreeHandle);
+		Llama3.cudaInit = linker.downcallHandle(
+				lookup.find("cudaInit").get(),
+				FunctionDescriptor.ofVoid());
 		Llama3.cudaGetMemInfo = linker.downcallHandle(
 				lookup.find("cudaGetMemInfo").get(),
 				FunctionDescriptor.ofVoid(
