@@ -7,6 +7,7 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.llama4j.FloatTensor;
 import com.llama4j.Llama3;
 
 public final class NativeLoader {
@@ -20,11 +21,13 @@ public final class NativeLoader {
 	private static final AtomicReference<LibraryState> libraryLoaded = new AtomicReference<>(LibraryState.NOT_LOADED);
 
 	static {
-		NativeLoader.loadLibrary(new File(System.getProperty("java.library.path")).list());
+		if(FloatTensor.USE_CUDA)
+			NativeLoader.loadLibrary(new File(System.getProperty("java.library.path")).list());
 	}
 
 	public static void load() {
-		NativeLoader.loadLibrary(new File(System.getProperty("java.library.path")).list());
+		if(FloatTensor.USE_CUDA)
+			NativeLoader.loadLibrary(new File(System.getProperty("java.library.path")).list());
 	}
 	
 	/**
@@ -61,6 +64,8 @@ public final class NativeLoader {
 	}
 
 	public static void loadMethods() {
+		if(!FloatTensor.USE_CUDA)
+			return;
 		Linker linker = Linker.nativeLinker();
 		System.out.println("linker:"+linker);
 		SymbolLookup lookup = SymbolLookup.loaderLookup();

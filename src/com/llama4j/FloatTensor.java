@@ -22,7 +22,7 @@ import jdk.incubator.vector.VectorSpecies;
  */
 public abstract class FloatTensor implements Externalizable, Comparable {
 	public static boolean DEBUG = false;
-	public static final boolean USE_CUDA = true;
+	public static final boolean USE_CUDA = false;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
     private long devicePtr; // 0 if not uploaded

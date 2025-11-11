@@ -242,15 +242,6 @@ public class Llama3 {
             }
             if (state == null) {
                 state = model.createNewState(BATCH_SIZE, chatFormat.getBeginOfText());
-                //Weights (static parameters):
-                //	Copy once from host to device.
-                //	Pin them in device memory; never move again unless you reload a model.
-                //	KV cache (attention buffer):
-                //	Allocate full device buffer sized for max sequence length × hidden dim.
-                //	Copy initial state (empty or seed tokens) once.
-                //	Scratch/workspace buffers:
-                //	Allocate on device for fused ops (matmul, softmax, reductions).
-                //	No host copies; reused every turn.
                 // copy to device if GPU
                 if(FloatTensor.USE_CUDA) {
                 	try (Timer timer = Timer.log("Weights to device..")) {
@@ -278,43 +269,37 @@ public class Llama3 {
             conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
             Set<Integer> stopTokens = chatFormat.getStopTokens();
             List<Integer> responseTokens = null;
-            List<Integer> responseTokensGPU;
-            if(ModelLoader.name.equals("qwen")) {
-            	responseTokens = Llama.generateTokensQwen(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
-            		if (options.stream()) {
-            			int tokenType = model.tokenizer().getTokenType(token);
-            			if (tokenType == 1 || tokenType == 6) {
-            				System.out.print(model.tokenizer().decode(List.of(token)));
+            if(FloatTensor.USE_CUDA) {
+            	try (Timer timer = Timer.log("GPU forward inference..")) {
+            		responseTokens = Llama.generateTokensGPU(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+            			if (options.stream()) {
+            				if (!model.tokenizer().isSpecialToken(token)) {
+            					System.out.print(model.tokenizer().decode(List.of(token)));
+            				}
             			}
-            		}
-            	});
+            		});
+            	}
             } else {
-               	/*try (Timer timer = Timer.log("CPU forward inference..")) {
-            	responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
-            		if (options.stream()) {
-            			if (!model.tokenizer().isSpecialToken(token)) {
-            				System.out.print(model.tokenizer().decode(List.of(token)));
-            			}
+            	try (Timer timer = Timer.log("CPU forward inference..")) {
+            		if(ModelLoader.name.equals("qwen")) {
+            			responseTokens = Llama.generateTokensQwen(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+            				if (options.stream()) {
+            					int tokenType = model.tokenizer().getTokenType(token);
+            					if (tokenType == 1 || tokenType == 6) {
+            						System.out.print(model.tokenizer().decode(List.of(token)));
+            					}
+            				}
+            			});
+            		} else {
+            			responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+            				if (options.stream()) {
+            					if (!model.tokenizer().isSpecialToken(token)) {
+            						System.out.print(model.tokenizer().decode(List.of(token)));
+            					}
+            				}
+            			});
             		}
-            	});
-               	}*/
-              	try (Timer timer = Timer.log("GPU forward inference..")) {
-             	responseTokensGPU = Llama.generateTokensGPU(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
-            		if (options.stream()) {
-            			if (!model.tokenizer().isSpecialToken(token)) {
-            				System.out.print(model.tokenizer().decode(List.of(token)));
-            			}
-            		}
-            	});
-              	}
-             	if(responseTokens.size() != responseTokensGPU.size()) {
-             		System.out.println("Response token Sizes differ:"+responseTokens.size()+" GPU:"+responseTokensGPU.size());
-             	} else {
-             		for(int i = 0; i < responseTokens.size(); i++) {
-             			if(responseTokens.get(i) != responseTokensGPU.get(i))
-             				System.out.println(i+".) ResponseTokens:"+responseTokens.get(i)+", "+responseTokensGPU.get(i));
-             		}
-             	}
+            	}
             }
             // Include stop token in the prompt history, but not in the response displayed to the user.
             conversationTokens.addAll(responseTokens);
@@ -635,11 +620,12 @@ public class Llama3 {
         		System.err.println("Could not open file " + options.modelPath.toString()+".metadata\r\n"+e);
         	}
         }
-        try {
-			Llama3.cudaInit.invokeExact();
-		} catch (Throwable e) {
-			throw new RuntimeException(e);
-		} 
+      	if(FloatTensor.USE_CUDA)
+      		try {
+      			Llama3.cudaInit.invokeExact();
+      		} catch (Throwable e) {
+      			throw new RuntimeException(e);
+      		} 
         Llama model = AOT.tryUsePreLoaded(options.modelPath(), options.maxTokens());
         if(model == null)
         	model = ModelLoader.loadModel(options.modelPath(), options.maxTokens(), true);
@@ -1742,6 +1728,16 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         final float finalss = ss; // for the lambda
         out.mapWithIndexInPlace(0, size, (value, index) -> weight.get(index) * (finalss * x.getFloat(index)));
     }
+    static void rmsnorm(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float rmsNormEps) {
+        // calculate sum of squares
+        float ss = x.reduce(0, size, 0f, (acc, xi) -> acc + xi * xi);
+        ss /= size;
+        ss += rmsNormEps;
+        ss = (float) (1.0 / Math.sqrt(ss));
+        // normalize and scale
+        final float finalss = ss; // for the lambda
+        out.mapWithIndexInPlace(0, size, (value, index) -> weight.getFloat(index) * (finalss * x.getFloat(index)));
+    }
     /**
      * Each inference turn:<br>
 	 * 1.Input activations (queries/keys/values for new tokens):
@@ -1947,7 +1943,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		// rmsnorm(state.xb, state.x, weights.rms_att_weight[l], dim, config.rmsNormEps);
     		final int curLayer = l;
     		Parallel.parallelFor(0, nTokens, t ->
-    			rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight[curLayer], dim, config.rmsNormEps)
+    			rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight_dev[curLayer], dim, config.rmsNormEps)
     		);
     		//try (Timer timer = Timer.log("qkv matmuls layer:"+l,TimeUnit.MICROSECONDS)) {
     		// qkv matmuls for this position
@@ -2054,7 +2050,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		//try (Timer timer = Timer.log("FFN RMSNorm layer:"+l,TimeUnit.MICROSECONDS)) {
     		// ffn rmsnorm
     		Parallel.parallelFor(0, nTokens, t -> {
-    			rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight[curLayer], dim, config.rmsNormEps);
+    			rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight_dev[curLayer], dim, config.rmsNormEps);
     		});
     		//}
     		//try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l,TimeUnit.MICROSECONDS)) {
@@ -2084,7 +2080,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     	//System.out.println("<<<END LAYER LOOP");
     	// final rmsnorm
     	Parallel.parallelFor(0, nTokens, t -> {
-    		rmsnorm(state.x[t], state.x[t], weights.rms_final_weight, dim, config.rmsNormEps);
+    		rmsnorm(state.x[t], state.x[t], weights.rms_final_weight_dev, dim, config.rmsNormEps);
     	});      
 
     	// classifier into logits
