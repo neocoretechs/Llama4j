@@ -182,14 +182,6 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
         return result;
     }
     
-    public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
-        MemorySegment qSeg = this.sliceElements(thisOffset, size);
-        MemorySegment kSeg = that.sliceElements(thatOffset, size);
-        float result = (float) Llama3.sdotSliceQ4Handle.invokeExact(qSeg, kSeg, size, GGMLType.Q4_0.getBlockSize(), thisOffset, GGMLType.Q4_0.getTypeSize(), GGMLType.FLOAT16_BYTES
-        );
-        return result;
-    }
-    
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
 		out.writeInt(size);

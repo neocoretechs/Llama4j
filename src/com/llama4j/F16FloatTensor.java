@@ -86,19 +86,19 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-    	//if(FloatTensor.USE_CUDA) {
+    	if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		//return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		//try {
-    		//	return cuBLASdotSlice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		//} catch (Throwable e) {
-    		//	if (FloatTensor.USE_VECTOR_API) {
-    		//		return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		//	} else {
-    		//		return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-    		//	}
-    		//}
-    	//} else
+    		try {
+    			return cuBLASdotSlice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    		} catch (Throwable e) {
+    			if (FloatTensor.USE_VECTOR_API) {
+    				return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    			} else {
+    				return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+    			}
+    		}
+    	} else
     		if (FloatTensor.USE_VECTOR_API) {
     			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		} else {
@@ -153,17 +153,6 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
             result += scalarDot(thiz, thisOffset + upperBound, that, thatOffset + upperBound, size - upperBound);
         }
 
-        return result;
-    }
-    
-    public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
-        MemorySegment qSeg = this.sliceElements(thisOffset, size);
-        MemorySegment kSeg = that.sliceElements(thatOffset, size);
-        float result = (float) Llama3.sdotSliceF16Handle.invokeExact(
-            qSeg, kSeg, size,
-            GGMLType.F16.getBlockSize(),
-            thisOffset
-        );
         return result;
     }
     

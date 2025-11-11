@@ -182,10 +182,19 @@ public final class NativeLoader {
 				FunctionDescriptor.ofVoid(
 						ValueLayout.ADDRESS, ValueLayout.ADDRESS, // S, A
 						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // rows, cols
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT  // ldS, ldA
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT  // ldS, ldA strides
 						)
 				);
 		System.out.println("launch_row_softmax_fp32:"+Llama3.launchSoftmax);
+		Llama3.launchSoftmaxInplace = linker.downcallHandle(
+				lookup.find("launch_row_softmax_inplace_fp32").get(),
+				FunctionDescriptor.ofVoid(
+						ValueLayout.ADDRESS, // S
+						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // rows, cols
+						ValueLayout.JAVA_INT  // offset
+						)
+				);
+		System.out.println("launch_row_softmax_inplace_fp32:"+Llama3.launchSoftmaxInplace);
 		Llama3.launchAV = linker.downcallHandle(
 			    lookup.find("launch_attention_av_weighted_sum").get(),
 			    FunctionDescriptor.ofVoid(

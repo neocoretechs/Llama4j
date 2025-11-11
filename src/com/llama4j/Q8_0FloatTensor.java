@@ -81,30 +81,30 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
 
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-    	//if(FloatTensor.USE_CUDA) {
-    		//try {
+    	if(FloatTensor.USE_CUDA) {
+    		try {
      			//float result1, result2;
       			//try (Timer timer = Timer.log("Q8 cublas dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-      				//return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
+      				return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
       			//}
       			//try (Timer timer = Timer.log("Q8 scalar dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-      			//   	if (FloatTensor.USE_VECTOR_API) {
-    	        //		result2 = vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    	        //	} else
-    	        //		result2 = FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-      			//}
+      			// 	if (FloatTensor.USE_VECTOR_API) {
+    	        		/*result2 =*/ //return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    	        	//} else {
+    	        		/*result2 =*/ //return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+    	        	//}
       			//if(result1 != result2)
       			//	System.out.println("Q8 results differ cublas dot:"+result1+", cpu dot:"+result2);
       			//return result2;
-			//} catch (Throwable e) {
+			} catch (Throwable e) {
 				//e.printStackTrace();
 				//System.out.println("Failed to invoke sdotSliceQ8Handle:"+e.getMessage()+" default to CPU...");
-			   	//if (FloatTensor.USE_VECTOR_API) {
-	        	//	return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-	        	//}
-	        	//return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-			//}
-    	//}
+			   	if (FloatTensor.USE_VECTOR_API) {
+	        		return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+	        	}
+	        	return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
+			}
+    	}
     	if (FloatTensor.USE_VECTOR_API) {
     		return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     	}

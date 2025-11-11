@@ -83,13 +83,6 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 		return memorySegment;
 	}
 	
-    public float cuBLASdotSlice(int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
-        MemorySegment qSeg = this.sliceElements(thisOffset, size);
-        MemorySegment kSeg = that.sliceElements(thatOffset, size);
-        float result = (float) Llama3.sdotSliceHandle.invokeExact(qSeg, kSeg, size);
-        return result;
-    }
-    
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
 		out.writeInt(size);

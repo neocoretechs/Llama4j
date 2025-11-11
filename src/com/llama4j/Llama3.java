@@ -103,6 +103,7 @@ public class Llama3 {
     public static MethodHandle launchRmsnorm;
     public static MethodHandle launchQK;
     public static MethodHandle launchSoftmax;
+	public static MethodHandle launchSoftmaxInplace;
     public static MethodHandle launchAV;
 	public static MethodHandle copyHostToDeviceMH;
 	public static MethodHandle copyDeviceToHostMH;
@@ -251,7 +252,7 @@ public class Llama3 {
                 //	Allocate on device for fused ops (matmul, softmax, reductions).
                 //	No host copies; reused every turn.
                 // copy to device if GPU
-                //if(FloatTensor.USE_CUDA) {
+                if(FloatTensor.USE_CUDA) {
                 	try (Timer timer = Timer.log("Weights to device..")) {
                 		// send weights
                 		log.info("Weights wo="+model.weights().wo.length);
@@ -271,12 +272,12 @@ public class Llama3 {
                 			state.att[i].copyHostToDevice();
                 		}
                 	}
-                //}
+                }
             }
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
             conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
             Set<Integer> stopTokens = chatFormat.getStopTokens();
-            List<Integer> responseTokens;
+            List<Integer> responseTokens = null;
             List<Integer> responseTokensGPU;
             if(ModelLoader.name.equals("qwen")) {
             	responseTokens = Llama.generateTokensQwen(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
@@ -288,7 +289,7 @@ public class Llama3 {
             		}
             	});
             } else {
-               	try (Timer timer = Timer.log("CPU forward inference..")) {
+               	/*try (Timer timer = Timer.log("CPU forward inference..")) {
             	responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
             		if (options.stream()) {
             			if (!model.tokenizer().isSpecialToken(token)) {
@@ -296,7 +297,7 @@ public class Llama3 {
             			}
             		}
             	});
-               	}
+               	}*/
               	try (Timer timer = Timer.log("GPU forward inference..")) {
              	responseTokensGPU = Llama.generateTokensGPU(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
             		if (options.stream()) {
@@ -1138,9 +1139,9 @@ final class ModelLoader {
                     if (loadWeights) {
                     	// loadTensors corresponds to getTensorEntries in old version
                         Map<String, GGMLTensorEntry> tensorEntries = GGUF.loadTensors(fileChannel, gguf.getTensorDataOffset(), gguf.getTensorInfos());
-                        //if(FloatTensor.USE_CUDA)
-                        	//weights = loadGPT2WeightsGPU(tensorEntries, config);
-                        //else
+                        if(FloatTensor.USE_CUDA)
+                        	weights = loadGPT2WeightsGPU(tensorEntries, config);
+                        else
                         	weights = loadGPT2Weights(tensorEntries, config);
                     }
             	} else {
@@ -2021,6 +2022,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     				state.att[token].setFloat(attOffset + t, score);
     			}*/
     			nanos2 = System.nanoTime() - nanos2;
+    			 for(int t = 0; t <= (position+token); t++)
+    				 System.out.printf("dot Att[%d]=%.6f%n", (attOffset + t), state.att[token].getFloat(attOffset + t));
     			// softmax the scores to get attention weights, from 0..position inclusively
     			//state.att[token].softmaxInPlace(attOffset, position + token + 1);
     			// weighted sum of the values, store back into xb

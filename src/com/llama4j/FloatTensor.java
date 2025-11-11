@@ -22,7 +22,7 @@ import jdk.incubator.vector.VectorSpecies;
  */
 public abstract class FloatTensor implements Externalizable, Comparable {
 	public static boolean DEBUG = false;
-	public static final boolean USE_CUDA = false;
+	public static final boolean USE_CUDA = true;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
     private long devicePtr; // 0 if not uploaded
@@ -93,10 +93,10 @@ public abstract class FloatTensor implements Externalizable, Comparable {
       		try {
       			//float result1, result2;
       			//try (Timer timer = Timer.log("cublas dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-				//return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
+				return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
       			//}
     			//try (Timer timer = Timer.log("scalar dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-				//result2 = scalarDot(this, thisOffset, that, thatOffset, size);
+				//result2 = return scalarDot(this, thisOffset, that, thatOffset, size);
     			//}
     			//if(result1 != result2) {
     			//	System.out.println("FloatTensor dot results differ:"+result1+", "+result2);
@@ -352,31 +352,20 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         return mapInPlace(thisOffset, size, unused -> value);
     }
     FloatTensor softmaxInPlace(int thisOffset, int size) {
-    	//if(USE_CUDA) {
-    		/*try (Timer timer = Timer.log("CUDA SoftMax:"+String.valueOf(size), TimeUnit.MICROSECONDS)) {       	
-    			// 1. Extract the slice into a flat float[]
-    			float[] slice = new float[size];
-    			for (int i = 0; i < size; i++) {
-    				slice[i] = getFloat(thisOffset + i);
-    			}
-    			// 2. Call the JNI CUDA kernel
-    			float[] softmaxed = Attn.softMax(slice, 1, size);
-    			// 3. Write results back into this tensor
-    			for (int i = 0; i < size; i++) {
-    				setFloat(thisOffset + i, softmaxed[i]);
-    			}
-    			return this;
-    		}*/
-    	//} else {
-    		//try (Timer timer = Timer.log("CPU SoftMax:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-    			// find max value (for numerical stability)
-    			float maxVal = max(thisOffset, size);
-    			// exp and sum
-    			mapInPlace(thisOffset, size, f -> (float) Math.exp(f - maxVal));
-    			float sum = sum(thisOffset, size);
-    			// normalize
-    			return divideInPlace(thisOffset, size, sum);
-    		//}
+    	if(USE_CUDA) {
+    		MemorySegment xDev = devSeg(devicePtrOr0(), (long) size * Float.BYTES, getArena());
+    		try {
+    			return (FloatTensor) Llama3.launchSoftmaxInplace.invokeExact(xDev, size, 1, thisOffset);
+    		} catch (Throwable e) {}
+    	}
+    	//try (Timer timer = Timer.log("CPU SoftMax:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
+    	// find max value (for numerical stability)
+    	float maxVal = max(thisOffset, size);
+    	// exp and sum
+    	mapInPlace(thisOffset, size, f -> (float) Math.exp(f - maxVal));
+    	float sum = sum(thisOffset, size);
+    	// normalize
+    	return divideInPlace(thisOffset, size, sum);
     	//}
     }
 

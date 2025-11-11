@@ -26,12 +26,12 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     
     ArrayFloatTensor(float[] values) {
     	this.values = values;
-    	//if(FloatTensor.USE_CUDA) {
+    	if(FloatTensor.USE_CUDA) {
     		// allocate off-heap space for headSize floats
     		memorySegment = getArena().allocate(ValueLayout.JAVA_FLOAT, values.length);
     		// bulk copy from heap arrays if you have them
     		MemorySegment.copy(values, 0, memorySegment, ValueLayout.JAVA_FLOAT, 0, values.length);
-    	//}
+    	}
     	//memorySegment = MemorySegment.ofArray(values);
     	//ByteBuffer bb = ByteBuffer.allocateDirect(values.length * Float.BYTES);
     	//bb.asFloatBuffer().put(values);
@@ -56,7 +56,7 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     @Override
     public void setFloat(int index, float value) {
         values[index] = value;
-        //if(FloatTensor.USE_CUDA)
+        if(FloatTensor.USE_CUDA)
         	memorySegment.setAtIndex(ValueLayout.JAVA_FLOAT, index, value);
     }
 
@@ -68,10 +68,10 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     @Override
     public FloatTensor fillInPlace(int thisOffset, int size, float value) {
         Arrays.fill(values, thisOffset, thisOffset + size, value);
-        //if(FloatTensor.USE_CUDA) {
+        if(FloatTensor.USE_CUDA) {
         	for(int index = thisOffset; index < thisOffset+size; index++)
         		memorySegment.setAtIndex(ValueLayout.JAVA_FLOAT, index, value);
-        //}
+        }
         return this;
     }
 
@@ -117,12 +117,12 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 		values = new float[vsize];
 		for(int i = 0; i < vsize; i++)
 			values[i]= in.readFloat();
-	 	//if(FloatTensor.USE_CUDA) {
+	 	if(FloatTensor.USE_CUDA) {
     		// allocate off-heap space for headSize floats
     		memorySegment = getArena().allocate(ValueLayout.JAVA_FLOAT, values.length);
     		// bulk copy from heap arrays if you have them
     		MemorySegment.copy(values, 0, memorySegment, ValueLayout.JAVA_FLOAT, 0, values.length);
-    	//}
+    	}
 	}
 
 	@Override
