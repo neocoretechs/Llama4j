@@ -74,6 +74,7 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
         int blockOffset = blockIndex * GGMLType.Q8_0.getTypeSize();
         byte quant = readByte(memorySegment, blockOffset + GGMLType.FLOAT16_BYTES + withinBlockIndex);
         float scale = Float.float16ToFloat(readShort(memorySegment, blockOffset));
+        System.out.printf("CPU index=%d quant=%d scale=%.6f%n", index, quant,scale);
         return quant * scale;
     }
 

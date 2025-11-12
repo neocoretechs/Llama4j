@@ -1956,19 +1956,15 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     	);
     	for(int i = 0; i < state.q.length; i++) {
     		state.q[i].allocDevice();
-    		state.q[i].copyDeviceToHost();
+    		state.q[i].copyHostToDevice();
     	}
        	for(int i = 0; i < state.k.length; i++) {
     		state.k[i].allocDevice();
-    		state.k[i].copyDeviceToHost();
+    		state.k[i].copyHostToDevice();
     	}
        	for(int i = 0; i < state.v.length; i++) {
     		state.v[i].allocDevice();
-    		state.v[i].copyDeviceToHost();
-    	}
-    	for(int i = 0; i < state.xb.length; i++) {
-    		state.xb[i].allocDevice();
-    		state.xb[i].copyDeviceToHost();
+    		state.v[i].copyHostToDevice();
     	}
   		for(int i = 0; i < state.hb.length; i++) {
 			state.hb[i].allocDevice();
@@ -1983,15 +1979,17 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		// attention rmsnorm
     		// rmsnorm(state.xb, state.x, weights.rms_att_weight[l], dim, config.rmsNormEps);
     		final int curLayer = l;
-    		Parallel.parallelFor(0, nTokens, t ->
-    			rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight_dev[curLayer], dim, config.rmsNormEps)
-    		);
+    		Parallel.parallelFor(0, nTokens, t -> {
+    			rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight_dev[curLayer], dim, config.rmsNormEps);
+    			state.xb[t].allocDevice();
+    			state.xb[t].copyHostToDevice();
+    		});
     		//try (Timer timer = Timer.log("qkv matmuls layer:"+l,TimeUnit.MICROSECONDS)) {
     		// qkv matmuls for this position
     		weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
     		weights.wk[l].matmul(nTokens, state.xb, state.k, kvDim, dim);
     		weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);
-
+    	
     		//}
     		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
     		// RoPE relative positional encoding: complex-valued rotate q and k in each head

@@ -81,6 +81,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         float result = 0f;
         for (int j = 0; j < size; j++) {
             result += thiz.getFloat(thisOffset + j) * that.getFloat(thatOffset + j);
+            System.out.printf("CPU %d) dot1 = %.6f dot2 = %.6f result = %.6f %n", j, thiz.getFloat(thisOffset + j) , that.getFloat(thatOffset + j), result);
         }
         return result;
     }
@@ -174,14 +175,10 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	switch(thiz) {
     	case Q8_0FloatTensor q8 -> {
      		float result2 = scalarDot(thiz, thisOffset, that, thatOffset, size);
-     		thiz.copyDeviceToHost();
-     		that.copyDeviceToHost();
     		float result = (float) Llama3.sdotSliceQ8DeviceHandle.invokeExact(thiz.devicePtrOr0(), that.devicePtrOr0(), (long)thisOffset, (long)thatOffset, size, 
     				GGMLType.Q8_0.getBlockSize(), GGMLType.Q8_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
       		System.out.printf("Q8 %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
     				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, result, result2);
-     		thiz.copyHostToDevice();
-     		that.copyHostToDevice();
       		return result2;
     	}
     	case Q4_0FloatTensor q4 -> {

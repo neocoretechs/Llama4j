@@ -10,8 +10,6 @@ import java.lang.foreign.ValueLayout;
 
 import java.util.Arrays;
 
-import com.neocoretechs.cublas.DeviceBuffer;
-
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
 
