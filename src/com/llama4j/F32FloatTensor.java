@@ -33,7 +33,14 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	public int size() {
 		return size;
 	}
-
+	@Override
+	int getHeadSize() {
+		return GGMLType.FLOAT16_BYTES; // although not used
+	}
+	@Override
+	int getFormatType() {
+		return 5;
+	}
 	@Override
 	public float getFloat(int index) {
 		assert 0 <= index && index < size;

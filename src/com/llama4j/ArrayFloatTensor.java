@@ -62,7 +62,14 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     public GGMLType type() {
         return GGMLType.F32;
     }
-
+    @Override
+    int getHeadSize() {
+    	return GGMLType.FLOAT16_BYTES; // even though its not used
+    }
+    @Override
+    int getFormatType() {
+    	return 5;
+    }
     @Override
     public FloatTensor fillInPlace(int thisOffset, int size, float value) {
         Arrays.fill(values, thisOffset, thisOffset + size, value);

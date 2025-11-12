@@ -71,8 +71,7 @@ import com.neocoretechs.relatrix.Result;
 import com.neocoretechs.rocksack.TransactionId;
 
 import com.neocoretechs.rocksack.Alias;
-import com.llama4j.Llama.Weights;
-import com.llama4j.ffi.CublasHandlePool;
+
 import com.llama4j.ffi.NativeLoader;
 
 public class Llama3 {
@@ -93,15 +92,6 @@ public class Llama3 {
 	public static Arena sharedArena = Arena.ofShared();
 	//
 	public static MethodHandle sdotSliceDeviceHandle;
-	public static MethodHandle sdotSliceQ8DeviceHandle;
-	public static MethodHandle sdotSliceQ4DeviceHandle;
-	public static MethodHandle sdotSliceF16DeviceHandle;
-	public static MethodHandle sdotSliceBF16DeviceHandle;
-    public static MethodHandle sdotSliceHandle;
-    public static MethodHandle sdotSliceQ8Handle;
-    public static MethodHandle sdotSliceQ4Handle;
-    public static MethodHandle sdotSliceF16Handle;
-    public static MethodHandle sdotSliceBF16Handle;
     public static MethodHandle cublasGetHandle;
     public static MethodHandle cublasFreeHandle;
     public static MethodHandle cudaGetMemInfo;

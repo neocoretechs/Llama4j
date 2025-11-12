@@ -65,7 +65,15 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     public GGMLType type() {
         return GGMLType.Q8_0;
     }
-
+    
+    @Override
+    int getHeadSize() {
+    	return GGMLType.FLOAT16_BYTES;
+    }
+    @Override
+    int getFormatType() {
+    	return 1;
+    }
     @Override
     public float getFloat(int index) {
         assert 0 <= index && index < size;
@@ -74,7 +82,7 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
         int blockOffset = blockIndex * GGMLType.Q8_0.getTypeSize();
         byte quant = readByte(memorySegment, blockOffset + GGMLType.FLOAT16_BYTES + withinBlockIndex);
         float scale = Float.float16ToFloat(readShort(memorySegment, blockOffset));
-        System.out.printf("CPU index=%d quant=%d scale=%.6f%n", index, quant,scale);
+        //System.out.printf("CPU index=%d quant=%d scale=%.6f%n", index, quant,scale);
         return quant * scale;
     }
 

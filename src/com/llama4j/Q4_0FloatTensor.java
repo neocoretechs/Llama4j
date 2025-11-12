@@ -57,7 +57,14 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
     public GGMLType type() {
         return GGMLType.Q4_0;
     }
-    
+    @Override
+    int getHeadSize() {
+    	return GGMLType.FLOAT16_BYTES;
+    }
+    @Override
+    int getFormatType() {
+    	return 2;
+    }
     @Override
     public Arena getArena() {
     	return Llama3.autoArena;
@@ -107,7 +114,7 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
        	if(FloatTensor.USE_CUDA) {
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		try {
-				return cuBLASdotSlice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+				return cudaSdotSliceDevice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
 			} catch (Throwable e) {
 		   		if (FloatTensor.USE_VECTOR_API) {
 	    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);

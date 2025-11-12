@@ -50,7 +50,14 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
     public GGMLType type() {
         return GGMLType.F16;
     }
-
+    @Override
+    int getHeadSize() {
+    	return GGMLType.FLOAT16_BYTES;
+    }
+    @Override
+    int getFormatType() {
+    	return 3;
+    }
     @Override
     public float getFloat(int index) {
         assert 0 <= index && index < size;
@@ -90,7 +97,7 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
     		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		//return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		try {
-    			return cuBLASdotSlice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    			return cudaSdotSliceDevice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
     		} catch (Throwable e) {
     			if (FloatTensor.USE_VECTOR_API) {
     				return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
