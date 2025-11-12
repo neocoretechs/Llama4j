@@ -164,6 +164,8 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     
     @Override
     public String toString() {
+    	if(FloatTensor.USE_CUDA)
+    		return getSegment().toString();//Arrays.toString(getSegment().toArray(ValueLayout.JAVA_FLOAT));
     	return Arrays.toString(values);
     }
 }

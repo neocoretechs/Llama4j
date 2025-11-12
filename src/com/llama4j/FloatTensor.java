@@ -22,7 +22,7 @@ import jdk.incubator.vector.VectorSpecies;
  */
 public abstract class FloatTensor implements Externalizable, Comparable {
 	public static boolean DEBUG = false;
-	public static final boolean USE_CUDA = false;
+	public static final boolean USE_CUDA = true;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
     private long devicePtr; // 0 if not uploaded
@@ -93,7 +93,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
       		try {
       			//float result1, result2;
       			//try (Timer timer = Timer.log("cublas dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-				return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
+				//return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
+				return cudaSdotSliceDevice(this, thisOffset, that, thatOffset, size);
       			//}
     			//try (Timer timer = Timer.log("scalar dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
 				//result2 = return scalarDot(this, thisOffset, that, thatOffset, size);
@@ -162,6 +163,48 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		float result = (float) Llama3.sdotSliceHandle.invokeExact(qSeg, kSeg, size);
     		//System.out.println(result);
     		return result;
+    	}
+    }
+    }
+    
+    public static float cudaSdotSliceDevice(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
+    	if(DEBUG)
+    		System.out.printf("%s thread:%s thisOffset:%d thatOffset:%d size:%d%n", 
+    				thiz.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size);
+    	switch(thiz) {
+    	case Q8_0FloatTensor q8 -> {
+     		float result2 = scalarDot(thiz, thisOffset, that, thatOffset, size);
+     		thiz.copyDeviceToHost();
+     		that.copyDeviceToHost();
+    		float result = (float) Llama3.sdotSliceQ8DeviceHandle.invokeExact(thiz.devicePtrOr0(), that.devicePtrOr0(), (long)thisOffset, (long)thatOffset, size, 
+    				GGMLType.Q8_0.getBlockSize(), GGMLType.Q8_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
+      		System.out.printf("Q8 %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
+    				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, result, result2);
+     		thiz.copyHostToDevice();
+     		that.copyHostToDevice();
+      		return result2;
+    	}
+    	case Q4_0FloatTensor q4 -> {
+    		float r = (float) Llama3.sdotSliceQ4DeviceHandle.invokeExact(thiz.devicePtrOr0(), that.devicePtrOr0(), size, GGMLType.Q4_0.getBlockSize(),
+    				thisOffset, GGMLType.Q4_0.getTypeSize(),GGMLType.FLOAT16_BYTES);
+    		return r;
+    	}
+    	case F16FloatTensor F16 -> { 
+    		float r = (float) Llama3.sdotSliceF16DeviceHandle.invokeExact(thiz.devicePtrOr0(), that.devicePtrOr0(), size,thisOffset, GGMLType.F16.getTypeSize());
+    		return r;
+    	}
+    	case  BF16FloatTensor BF16 -> {
+    		float r = (float) Llama3.sdotSliceBF16DeviceHandle.invokeExact(thiz.devicePtrOr0(), that.devicePtrOr0(), size,thisOffset, GGMLType.BF16.getTypeSize());
+    		return r;
+    	}
+    	default -> {
+    		float result2 = scalarDot(thiz, thisOffset, that, thatOffset, size);
+    		//System.out.println("AT this:"+thiz.toString()+" that:"+that.toString());
+    		float result = (float) Llama3.sdotSliceDeviceHandle.invokeExact(thiz.devicePtrOr0(), that.devicePtrOr0(), (long)thisOffset, (long)thatOffset, size);
+      		System.out.printf("AT %s %s thread:%s thisOffset:%d thatOffset:%d size:%d r=%.6f r2=%.6f%n", 
+    				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, result, result2);
+    		//System.out.println(result);
+    		return result2;
     	}
     }
     }

@@ -85,7 +85,7 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     		try {
      			//float result1, result2;
       			//try (Timer timer = Timer.log("Q8 cublas dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
-      				return cuBLASdotSlice(this, thisOffset, that, thatOffset, size);
+      				return cudaSdotSliceDevice(this, thisOffset, that, thatOffset, size);
       			//}
       			//try (Timer timer = Timer.log("Q8 scalar dot:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
       			// 	if (FloatTensor.USE_VECTOR_API) {

@@ -70,6 +70,67 @@ public final class NativeLoader {
 		System.out.println("linker:"+linker);
 		SymbolLookup lookup = SymbolLookup.loaderLookup();
 		System.out.println("Loader:"+lookup);
+		Llama3.sdotSliceDeviceHandle = linker.downcallHandle(
+				lookup.find("sdotSliceDevice").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_LONG,      // offset1
+						ValueLayout.JAVA_LONG,      // offset2
+						ValueLayout.JAVA_INT      // headSize
+						));
+		System.out.println("sdotSliceDevice:"+Llama3.sdotSliceDeviceHandle);
+		Llama3.sdotSliceQ8DeviceHandle = linker.downcallHandle(
+				lookup.find("sdotSliceQ8Device").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_LONG,      // offset1
+						ValueLayout.JAVA_LONG,      // offset2
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // blockSize
+						ValueLayout.JAVA_INT,     // typeSize
+						ValueLayout.JAVA_INT      // headerBytes
+						));
+		System.out.println("sdotSliceQ8Device:"+Llama3.sdotSliceQ8DeviceHandle);
+		Llama3.sdotSliceQ4DeviceHandle = linker.downcallHandle(
+				lookup.find("sdotSliceQ4Device").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // blockSize
+						ValueLayout.JAVA_INT,     // index
+						ValueLayout.JAVA_INT,     // typeSize
+						ValueLayout.JAVA_INT      // headerBytes
+						));
+		System.out.println("sdotSliceQ4Device:"+Llama3.sdotSliceQ4DeviceHandle);
+		Llama3.sdotSliceF16DeviceHandle = linker.downcallHandle(
+				lookup.find("sdotSliceF16Device").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // index
+						ValueLayout.JAVA_INT      // typeSize
+						));
+		System.out.println("sdotSliceF16Device:"+Llama3.sdotSliceF16DeviceHandle);
+		//sdotSliceF16(const uint8_t* q, const float* k, int headSize, int blocks, int typeSize) 
+		Llama3.sdotSliceBF16DeviceHandle = linker.downcallHandle(
+				lookup.find("sdotSliceBF16Device").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_LONG,      // device
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // index
+						ValueLayout.JAVA_INT      // typeSize
+						));
+		System.out.println("sdotSliceBF16Device:"+Llama3.sdotSliceBF16DeviceHandle);
 		Llama3.sdotSliceHandle = linker.downcallHandle(
 				lookup.find("sdotSlice").get(),
 				FunctionDescriptor.of(
@@ -194,7 +255,7 @@ public final class NativeLoader {
 		Llama3.launchSoftmaxInplace = linker.downcallHandle(
 				lookup.find("launch_row_softmax_inplace_fp32").get(),
 				FunctionDescriptor.ofVoid(
-						ValueLayout.ADDRESS, // S
+						ValueLayout.JAVA_LONG, // S device address
 						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // rows, cols
 						ValueLayout.JAVA_INT  // offset
 						)
