@@ -21,7 +21,7 @@ import jdk.incubator.vector.VectorSpecies;
  * e.g. can represent a sequence of quantized floats.
  */
 public abstract class FloatTensor implements Externalizable, Comparable {
-	public static boolean DEBUG = false;
+	public static boolean DEBUG = true;
 	public static final boolean USE_CUDA = true;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
@@ -128,8 +128,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     				thiz.devicePtrOr0(), thisOffset, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
     				that.devicePtrOr0(), thatOffset, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(),
     				size);
-    		if(result != result2)
-    			System.out.printf("Sdot values dont match: Q8 %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
+    		if(Math.abs(result - result2) > 1e-5f)
+    			System.out.printf("Sdot values dont match: %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
     				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, result, result2);
       		return result;
     		}
