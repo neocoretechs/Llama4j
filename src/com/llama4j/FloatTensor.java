@@ -21,7 +21,7 @@ import jdk.incubator.vector.VectorSpecies;
  * e.g. can represent a sequence of quantized floats.
  */
 public abstract class FloatTensor implements Externalizable, Comparable {
-	public static boolean DEBUG = true;
+	public static boolean DEBUG = false;
 	public static final boolean USE_CUDA = true;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
@@ -61,7 +61,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
             S_SPECIES_HALF = null;
         }
     }
- 
+
     public abstract int size();
     public abstract float getFloat(int index);
     public abstract void setFloat(int index, float value);
@@ -74,6 +74,10 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     abstract GGMLType type();
     abstract int getHeadSize();
     abstract int getFormatType(); // for GPU side quantized conversion
+    // Explicit byte count vs element count
+    private long elementCount() { return size(); } // if size() is elements
+    private int elementByteSize() { return type().getTypeSize(); } // e.g., 1 for Q8_0, 4 for float
+    private long totalBytes() { return elementCount() * (long) elementByteSize(); }
 
     public static int numberOfElements(int... dimensions) {
         assert Arrays.stream(dimensions).allMatch(i -> i > 0);
@@ -133,12 +137,10 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, result, result2);
       		return result;
     		}
-    }
-    
+    }   
     public void allocDevice() {
     	devicePtr = allocDevice(getSegment().byteSize());
-    }
-    
+    }   
     public void freeDevice() {
     	if(isOnDevice()) {
     		DeviceMemoryLedger.release(getSegment().byteSize());
@@ -148,8 +150,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 			}
     		devicePtr = 0L;
     	}
-    }
-    
+    }  
     public static long allocDevice(long bytes) {
     	if(DeviceMemoryLedger.tryReserve(bytes)) {
     		try {
@@ -160,8 +161,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 			}
     	}
 		return 0L;
-    }
-    
+    } 
     /**
      * every time you need to pass a device buffer into a downcall, 
      * call devSeg(ptr, size, arena) and get a properly bounded MemorySegment. 
@@ -183,27 +183,34 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     public boolean isOnDevice() {
         return devicePtr != 0L;
     }
+
     public void copyHostToDevice() {
-    	MemorySegment seg = getSegment();
-    	try {
-    		Llama3.copyHostToDeviceMH.invokeExact(seg, devicePtr, seg.byteSize());
-    	} catch (Throwable e) {
-    		e.printStackTrace();
-    	}
-    }
-    public void copyDeviceToHost() {
-    	MemorySegment seg = getSegment();
-    	seg = devSeg(devicePtrOr0(), (long)size(), getArena());
-    	try {
-    		if(isOnDevice())
-    			Llama3.copyDeviceToHostMH.invokeExact(devicePtr, seg, (long)size());
-    		else
-    			throw new RuntimeException("Device is not initialized for segment:"+getSegment()+" tensor:"+this);
-    	} catch (Throwable e) {
-    		e.printStackTrace();
-    	}
+        MemorySegment hostSeg = getSegment();
+        long bytes = totalBytes();
+        if (!isOnDevice())
+            throw new RuntimeException("Device is not initialized for HostToDevice transfer: " + this);
+        try {
+            // Signature should be (hostSeg, devicePtr, bytes)
+            Llama3.copyHostToDeviceMH.invokeExact(hostSeg, devicePtr, bytes);
+        } catch (Throwable e) {
+            throw new RuntimeException("HostToDevice transfer failed for " + this, e);
+        }
     }
 
+    public void copyDeviceToHost() {
+        long bytes = totalBytes();
+        if (!isOnDevice())
+            throw new RuntimeException("Device is not initialized for DeviceToHost transfer: " + this);
+        MemorySegment hostSeg = getSegment();
+        // Create a bounded device segment view for Panama, tied to the same arena lifecycle.
+        MemorySegment devView = devSeg(devicePtr, bytes, getArena());
+        try {
+            // Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
+            Llama3.copyDeviceToHostMH.invokeExact(devicePtr, hostSeg, bytes);
+        } catch (Throwable e) {
+            throw new RuntimeException("D2H failed for " + this, e);
+        }
+    }
     static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) throws Throwable {
     	MemorySegment xDev  = devSeg(x.devicePtrOr0(),      (long) size * Float.BYTES, x.getArena());
         MemorySegment wDev  = devSeg(weight.devicePtrOr0(), (long) size * Float.BYTES, weight.getArena());

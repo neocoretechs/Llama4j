@@ -1974,13 +1974,13 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     			state.xb[t].allocDevice();
     			state.xb[t].copyHostToDevice();
     		});
-    		//try (Timer timer = Timer.log("qkv matmuls layer:"+l,TimeUnit.MICROSECONDS)) {
+    		try (Timer timer = Timer.log("qkv matmuls layer:"+l,TimeUnit.MICROSECONDS)) {
     		// qkv matmuls for this position
     		weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
     		weights.wk[l].matmul(nTokens, state.xb, state.k, kvDim, dim);
     		weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);
     	
-    		//}
+    		}
     		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
     		// RoPE relative positional encoding: complex-valued rotate q and k in each head
     		Parallel.parallelFor(0, nTokens, t -> {
@@ -2019,7 +2019,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     			state.valueCache[curLayer].copyHostToDevice();
     		}
     		// original multihead attention. iterate over all heads
-    		//try (Timer timer = Timer.log("CPU Multihead Attn layer:"+l,TimeUnit.MICROSECONDS)) {
+    		try (Timer timer = Timer.log("CPU Multihead Attn layer:"+l,TimeUnit.MICROSECONDS)) {
     		Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
     			//for(long ht = 0; ht < ((long) nTokens * (long) config.numberOfHeads); ht++) {
     			int token = (int) (ht / config.numberOfHeads);
@@ -2065,7 +2065,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     				state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
     			}
     		});
-    		//}
+    		}
     		//----end original multihead attention
     		try (Timer timer = Timer.log("Final matmul and residual connection layer:"+l,TimeUnit.MICROSECONDS)) {
     		// final matmul to get the output of the attention
