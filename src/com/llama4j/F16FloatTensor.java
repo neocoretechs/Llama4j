@@ -63,7 +63,9 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
         assert 0 <= index && index < size;
         return Float.float16ToFloat(readShort(memorySegment, index * GGMLType.FLOAT16_BYTES));
     }
-    
+    protected long totalBytes() { 
+    	return size(); 
+    }
 	@Override
 	public MemorySegment asSlice(long offSet1, long offSet2) {
 		return memorySegment.asSlice(offSet1, offSet2);

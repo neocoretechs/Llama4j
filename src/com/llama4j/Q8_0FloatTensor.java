@@ -74,6 +74,9 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     int getFormatType() {
     	return 1;
     }
+    protected long totalBytes() { 
+    	return size(); 
+    }
     @Override
     public float getFloat(int index) {
         assert 0 <= index && index < size;

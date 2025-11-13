@@ -83,6 +83,9 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
     int getHeadSize() {
     	return GGMLType.FLOAT16_BYTES;
     }
+    protected long totalBytes() { 
+    	return size(); 
+    }
     @Override
     int getFormatType() {
     	return 4;

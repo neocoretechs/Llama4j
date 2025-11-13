@@ -7,7 +7,7 @@ import java.io.ObjectOutput;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-
+import java.nio.FloatBuffer;
 import java.util.Arrays;
 
 import jdk.incubator.vector.FloatVector;
@@ -70,6 +70,9 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
     int getFormatType() {
     	return 5;
     }
+    protected long totalBytes() { 
+    	return size() * (long) Float.BYTES; 
+    }
     @Override
     public FloatTensor fillInPlace(int thisOffset, int size, float value) {
         Arrays.fill(values, thisOffset, thisOffset + size, value);
@@ -107,6 +110,21 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
         long endBlock   = (elementOffset + elementCount - 1) / GGMLType.F32.getBlockSize();
         long blocks     = (endBlock - startBlock + 1);
         return blocks * GGMLType.F32.getTypeSize();
+    }
+    @Override
+    public void copyDeviceToHost() {
+        long bytes = totalBytes();
+        if (!isOnDevice())
+            throw new RuntimeException("Device is not initialized for DeviceToHost transfer: " + this);
+        MemorySegment hostSeg = getSegment();
+        try {
+            // Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
+            Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), hostSeg, bytes);
+            FloatBuffer fb = hostSeg.asByteBuffer().asFloatBuffer();
+            fb.get(values);
+        } catch (Throwable e) {
+            throw new RuntimeException("DeviceToHost tansfer failed for " + this, e);
+        }
     }
     
 	@Override

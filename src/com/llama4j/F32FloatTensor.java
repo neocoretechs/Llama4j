@@ -89,7 +89,9 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 	public MemorySegment getSegment() {
 		return memorySegment;
 	}
-	
+	protected long totalBytes() { 
+	    return memorySegment.byteSize(); 
+	}
 	@Override
 	public void writeExternal(ObjectOutput out) throws IOException {
 		out.writeInt(size);

@@ -1930,6 +1930,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     //------------------------------------------------------------
     ///----------------GPU test
     static FloatTensor forwardGPU(Llama model, State state, int[] tokens, int position, boolean computeLogits) {
+    	FloatTensor.dontMatch = 0;
+    	FloatTensor.totalSdot = 0;
     	// a few convenience variables
     	Configuration config = model.configuration();
     	Weights weights = model.weights();
@@ -1974,12 +1976,11 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     			state.xb[t].allocDevice();
     			state.xb[t].copyHostToDevice();
     		});
-    		try (Timer timer = Timer.log("qkv matmuls layer:"+l,TimeUnit.MICROSECONDS)) {
+    		try (Timer timer = Timer.log("qkv matmuls layer:"+l+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total.",TimeUnit.MICROSECONDS)) {
     		// qkv matmuls for this position
     		weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
     		weights.wk[l].matmul(nTokens, state.xb, state.k, kvDim, dim);
-    		weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);
-    	
+    		weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);	
     		}
     		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
     		// RoPE relative positional encoding: complex-valued rotate q and k in each head
@@ -2019,7 +2020,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     			state.valueCache[curLayer].copyHostToDevice();
     		}
     		// original multihead attention. iterate over all heads
-    		try (Timer timer = Timer.log("CPU Multihead Attn layer:"+l,TimeUnit.MICROSECONDS)) {
+    		try (Timer timer = Timer.log("CPU Multihead Attn layer:"+l+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total.",TimeUnit.MICROSECONDS)) {
     		Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
     			//for(long ht = 0; ht < ((long) nTokens * (long) config.numberOfHeads); ht++) {
     			int token = (int) (ht / config.numberOfHeads);
@@ -2067,7 +2068,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		});
     		}
     		//----end original multihead attention
-    		try (Timer timer = Timer.log("Final matmul and residual connection layer:"+l,TimeUnit.MICROSECONDS)) {
+    		try (Timer timer = Timer.log("Final matmul and residual connection layer:"+l+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total.",TimeUnit.MICROSECONDS)) {
     		// final matmul to get the output of the attention
     		weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, dim);
     		// residual connection back into x
@@ -2081,7 +2082,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     			rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight_dev[curLayer], dim, config.rmsNormEps);
     		});
     		}
-    		try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l,TimeUnit.MICROSECONDS)) {
+    		try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total.",TimeUnit.MICROSECONDS)) {
     		// Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
     		// first calculate self.w1(x) and self.w3(x)
     		weights.w1[l].matmul(nTokens, state.xb, state.hb, config.hiddenDim, dim);
@@ -2140,6 +2141,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
  		for(int i = 0; i < state.hb2.length; i++) {
 			state.hb2[i].freeDevice();
 		}
+ 		System.out.println(FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total.");
     	return state.logits;
     }
     static void doGPUAtt(int curLayer, int position, float sqrtHeadSize, int ht, int numberOfHeads, int headSize, int contextLength, int kvDim, int kvMul, State state) {

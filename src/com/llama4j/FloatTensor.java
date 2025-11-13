@@ -75,9 +75,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     abstract int getHeadSize();
     abstract int getFormatType(); // for GPU side quantized conversion
     // Explicit byte count vs element count
-    private long elementCount() { return size(); } // if size() is elements
-    private int elementByteSize() { return type().getTypeSize(); } // e.g., 1 for Q8_0, 4 for float
-    private long totalBytes() { return elementCount() * (long) elementByteSize(); }
+    protected abstract long totalBytes();
 
     public static int numberOfElements(int... dimensions) {
         assert Arrays.stream(dimensions).allMatch(i -> i > 0);
@@ -117,7 +115,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
       	}
 		return scalarDot(this, thisOffset, that, thatOffset, size);
     }
- 
+    public static int dontMatch = 0;
+    public static int totalSdot = 0;
     public static Object mutex = new Object();
     public static float cudaSdotSliceDevice(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
     	if(DEBUG)
@@ -128,13 +127,18 @@ public abstract class FloatTensor implements Externalizable, Comparable {
      		//float sdotSliceDevice(const uint8_t* qA, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
 			//	    const uint8_t* qB, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB,
 			//	    int N)
+     		++totalSdot;
     		float result = (float) Llama3.sdotSliceDeviceHandle.invokeExact(
     				thiz.devicePtrOr0(), thisOffset, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
     				that.devicePtrOr0(), thatOffset, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(),
     				size);
-    		if(Math.abs(result - result2) > 1e-5f)
-    			System.out.printf("Sdot values dont match: %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
+    		if(Math.abs(result - result2) > 1e-5f) {
+    			++dontMatch;
+    			if(DEBUG)
+    				System.out.printf("Sdot values dont match: %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
     				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, result, result2);
+    			return result2;
+    		}
       		return result;
     		}
     }   
@@ -202,13 +206,11 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         if (!isOnDevice())
             throw new RuntimeException("Device is not initialized for DeviceToHost transfer: " + this);
         MemorySegment hostSeg = getSegment();
-        // Create a bounded device segment view for Panama, tied to the same arena lifecycle.
-        MemorySegment devView = devSeg(devicePtr, bytes, getArena());
         try {
             // Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
             Llama3.copyDeviceToHostMH.invokeExact(devicePtr, hostSeg, bytes);
         } catch (Throwable e) {
-            throw new RuntimeException("D2H failed for " + this, e);
+            throw new RuntimeException("DeviceToHost transfer failed for " + this, e);
         }
     }
     static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) throws Throwable {
