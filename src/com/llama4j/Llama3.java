@@ -287,36 +287,39 @@ public class Llama3 {
                      		model.weights().rms_att_weight_dev[i].allocDevice();
                      		model.weights().rms_att_weight_dev[i].copyHostToDevice();
                 		}
-                   		log.info("Weights state.q="+state.q.length+" tensors.");
+                  		log.info("Weights wcls="+model.weights().wcls.size());
+                     	model.weights().wcls.allocDevice();
+                     	model.weights().wcls.copyHostToDevice();
+                	}
+                    try (Timer timer = Timer.log("State to device..")) {
+                   		log.info("State.q="+state.q.length+" tensors.");
                 	   	for(int i = 0; i < state.q.length; i++) {
                     		state.q[i].allocDevice();
                     		state.q[i].copyHostToDevice();
                     	}
-                		log.info("Weights state.k="+state.k.length+" tensors.");
+                		log.info("State.k="+state.k.length+" tensors.");
                        	for(int i = 0; i < state.k.length; i++) {
                     		state.k[i].allocDevice();
                     		state.k[i].copyHostToDevice();
                     	}
-                		log.info("Weights state.v="+state.v.length+" tensors.");
+                		log.info("State.v="+state.v.length+" tensors.");
                        	for(int i = 0; i < state.v.length; i++) {
                     		state.v[i].allocDevice();
                     		state.v[i].copyHostToDevice();
                     	}
-                		log.info("Weights state.hb="+state.hb.length+" tensors.");
+                		log.info("State.hb="+state.hb.length+" tensors.");
                   		for(int i = 0; i < state.hb.length; i++) {
                 			state.hb[i].allocDevice();
                 			state.hb[i].copyHostToDevice();
                 		}
-                		log.info("Weights state.hb2="+state.hb2.length+" tensors.");
+                		log.info("State.hb2="+state.hb2.length+" tensors.");
                  		for(int i = 0; i < state.hb2.length; i++) {
                 			state.hb2[i].allocDevice();
                 			state.hb2[i].copyHostToDevice();
-                		}
-                		log.info("Weights state.logits="+state.logits.size()+" elements.");
+                		}        		
+                		log.info("State.logits="+state.logits.size()+" elements.");
                  		state.logits.allocDevice();
                  		state.logits.copyHostToDevice();
-                	}
-                 	try (Timer timer = Timer.log("State to device..")) {
                  		log.info("State.q="+state.q.length+" tensors.");
                 		for(int i = 0; i < state.q.length; i++) {
                 			state.q[i].allocDevice();
@@ -334,7 +337,7 @@ public class Llama3 {
             conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
             Set<Integer> stopTokens = chatFormat.getStopTokens();
             List<Integer> responseTokens = null;
-            try (Timer timer = Timer.log("Forward inference..")) {
+     //       try (Timer timer = Timer.log("Forward inference..")) {
             	if(ModelLoader.name.equals("qwen")) {
             		responseTokens = Llama.generateTokensQwen(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
             			if (options.stream()) {
@@ -353,7 +356,7 @@ public class Llama3 {
             			}
             		});
             	}
-            }
+            //}
 
             // Include stop token in the prompt history, but not in the response displayed to the user.
             conversationTokens.addAll(responseTokens);
@@ -1361,6 +1364,7 @@ final class ModelLoader {
     
 	static Llama.Weights loadLlamaWeightsGPU(Map<String, GGMLTensorEntry> T, Llama.Configuration cfg) {
         Pair<float[], float[]> rope = RoPE.precomputeFreqsCis(cfg.contextLength, cfg.headSize, cfg.ropeTheta);
+  
         FloatTensor tokenEmb = Llama.Weights.wrapTensor(T.get("token_embd.weight")); // unified
 
         FloatTensor[] attnNorm = FloatTensor.loadArrayOfF32Tensors(cfg.numberOfLayers, i -> T.get("blk."+i+".attn_norm.weight"));
@@ -1377,8 +1381,8 @@ final class ModelLoader {
         FloatTensor outNorm    = Llama.Weights.wrapTensor(T.get("output_norm.weight"));
         FloatTensor outWeight  = Llama.Weights.wrapTensor(T.get("output.weight"));
 
-        FloatTensor ropeReal   = new F32FloatTensor(rope.first().length, MemorySegment.ofArray(rope.first()));
-        FloatTensor ropeImag   = new F32FloatTensor(rope.second().length, MemorySegment.ofArray(rope.second()));
+        //FloatTensor ropeReal   = new F32FloatTensor(rope.first().length, MemorySegment.ofArray(rope.first()));
+        //FloatTensor ropeImag   = new F32FloatTensor(rope.second().length, MemorySegment.ofArray(rope.second()));
 
         return new Llama.Weights(
             tokenEmb,
@@ -1989,20 +1993,26 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     	//FloatTensor.dontMatch = 0;
     	//FloatTensor.totalSdot = 0;
     	// a few convenience variables
+    	System.out.println("Starting forward inference");
     	Configuration config = model.configuration();
+    	System.out.println("model config="+config.contextLength);
     	Weights weights = model.weights();
+    	System.out.println("Weights="+weights.toString());
     	int dim = config.dim;
     	int headSize = config.headSize;
     	int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
     	int kvMul = config.numberOfHeads / config.numberOfKeyValueHeads; // integer multiplier of the kv sharing in multiquery
     	float sqrtHeadSize = (float) Math.sqrt(headSize);
     	final int nTokens = tokens.length;
-
+    	System.out.println("Tokens len="+tokens.length);
+   System.out.println("copy...");for(int xx = 0; xx < nTokens; xx++) {
+	   System.out.println("dim="+dim+" tokens[t]*dim="+tokens[xx]*dim+" x size="+state.x[xx].size()+" weights size:"+weights.token_embedding_table.size());
+   }
     	// copy the token embedding into x
     	Parallel.parallelFor(0, nTokens, t ->
     		weights.token_embedding_table.copyTo(tokens[t] * dim, state.x[t], 0, dim)
     	);
- 
+ System.out.println("copy...");
     	// forward all the layers
     	for (int l = 0; l < config.numberOfLayers; l++) {
     		// attention rmsnorm
@@ -2114,30 +2124,33 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		});
     		}
     		//----end original multihead attention
-    		try (Timer timer = Timer.log("Final matmul and residual connection layer:"+l/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS)) {
+    		//try (Timer timer = Timer.log("Final matmul and residual connection layer:"+l/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS)) {
     		// final matmul to get the output of the attention
     		// range of matmul is dim0 * context
-    		for(int i = 0; i < (dim*nTokens); i++) {
+    		for(int i = 0; i < state.xb2.length; i++) {
     				state.xb2[i].allocDevice();
     				state.xb2[i].copyHostToDevice(); // set up for matmul
     		}
     		weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, dim);
     		// residual connection back into x
-    		Parallel.parallelFor(0, nTokens, t -> {
+    		for(int t = 0; t < nTokens; t++)
     			state.xb2[t].copyDeviceToHost(); // from above matmul
+    		Parallel.parallelFor(0, nTokens, t -> {
     			state.x[t].addInPlace(state.xb2[t]);
-      			state.x[t].copyDeviceToHost(); // set up for rmsnorm
     		});
-    		}
-    		try (Timer timer = Timer.log("FFN RMSNorm layer:"+l,TimeUnit.MICROSECONDS)) {
+     		for(int t = 0; t < nTokens; t++)
+    			state.xb2[t].copyHostToDevice(); // from above matmul
+    		//}
+    		//try (Timer timer = Timer.log("FFN RMSNorm layer:"+l,TimeUnit.MICROSECONDS)) {
     		// ffn rmsnorm
+     		System.out.println("FFN RMSnorm...");
     		Parallel.parallelFor(0, nTokens, t -> {
     			rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight_dev[curLayer], dim, config.rmsNormEps);
     		});
-    		}
+    		//}
     		for(int t = 0; t < nTokens; t++)
     			state.xb[t].copyDeviceToHost();
-    		try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS)) {
+    		//try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS)) {
     		// Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
     		// first calculate self.w1(x) and self.w3(x)
     		weights.w1[l].matmul(nTokens, state.xb, state.hb, config.hiddenDim, dim);
@@ -2165,17 +2178,17 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		Parallel.parallelFor(0, nTokens, t -> {
     			state.x[t].addInPlace(state.xb[t]);
     		});
-    		}
+    		//}
   			state.keyCache[curLayer].freeDevice();
 			state.valueCache[curLayer].freeDevice();
     	}
-    	System.out.println("<<<END LAYER LOOP");
+    	System.out.println("<<<END LAYER LOOP, final RMSNorm:"+nTokens+" state.x="+state.x.length+" rms_final_weight size="+weights.rms_final_weight_dev.size());
     	// final rmsnorm
     	Parallel.parallelFor(0, nTokens, t -> {
     		state.x[t].copyHostToDevice();
     		rmsnorm(state.x[t], state.x[t], weights.rms_final_weight_dev, dim, config.rmsNormEps);
     	});      
-
+    	System.out.println("Classifier in to logits weights.wcls size=:"+weights.wcls.size());
     	// classifier into logits
     	weights.wcls.matmul(state.x[nTokens - 1], state.logits, config.vocabularySize, dim);
     	state.idxPrevBlock = nTokens - 1;

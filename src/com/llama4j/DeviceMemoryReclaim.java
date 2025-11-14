@@ -34,6 +34,7 @@ public final class DeviceMemoryReclaim implements AutoCloseable {
     
     @Override
     public void close() {
+    	System.out.println(this.getClass().getName()+" Close...");
         cleanable.clean(); // deterministic release
     }
 }
