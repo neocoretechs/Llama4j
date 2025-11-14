@@ -334,9 +334,18 @@ public class Llama3 {
             conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
             Set<Integer> stopTokens = chatFormat.getStopTokens();
             List<Integer> responseTokens = null;
-            if(FloatTensor.USE_CUDA) {
-            	try (Timer timer = Timer.log("GPU forward inference..")) {
-            		responseTokens = Llama.generateTokensGPU(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+            try (Timer timer = Timer.log("Forward inference..")) {
+            	if(ModelLoader.name.equals("qwen")) {
+            		responseTokens = Llama.generateTokensQwen(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+            			if (options.stream()) {
+            				int tokenType = model.tokenizer().getTokenType(token);
+            				if (tokenType == 1 || tokenType == 6) {
+            					System.out.print(model.tokenizer().decode(List.of(token)));
+            				}
+            			}
+            		});
+            	} else {
+            		responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
             			if (options.stream()) {
             				if (!model.tokenizer().isSpecialToken(token)) {
             					System.out.print(model.tokenizer().decode(List.of(token)));
@@ -344,28 +353,8 @@ public class Llama3 {
             			}
             		});
             	}
-            } else {
-            	try (Timer timer = Timer.log("CPU forward inference..")) {
-            		if(ModelLoader.name.equals("qwen")) {
-            			responseTokens = Llama.generateTokensQwen(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
-            				if (options.stream()) {
-            					int tokenType = model.tokenizer().getTokenType(token);
-            					if (tokenType == 1 || tokenType == 6) {
-            						System.out.print(model.tokenizer().decode(List.of(token)));
-            					}
-            				}
-            			});
-            		} else {
-            			responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
-            				if (options.stream()) {
-            					if (!model.tokenizer().isSpecialToken(token)) {
-            						System.out.print(model.tokenizer().decode(List.of(token)));
-            					}
-            				}
-            			});
-            		}
-            	}
             }
+
             // Include stop token in the prompt history, but not in the response displayed to the user.
             conversationTokens.addAll(responseTokens);
             startPosition = conversationTokens.size();
@@ -2446,7 +2435,10 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 }
                 // Only compute logits on the very last batch.
                 boolean computeLogits = promptIndex + nTokens >= promptTokens.size();
-                forward(model, state, tokens, position, computeLogits);
+                if(FloatTensor.USE_CUDA)
+                	forwardGPU(model, state, tokens, position, computeLogits);
+                else
+                	forward(model, state, tokens, position, computeLogits);
                 position += nTokens - 1; // -1 -> incremented later in the for loop
                 promptIndex += nTokens;
                 if (promptIndex < promptTokens.size()) {
@@ -2454,7 +2446,10 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 }
                 startGen = System.nanoTime();
             } else {
-                forward(model, state, new int[]{token}, position, true);
+            	if(FloatTensor.USE_CUDA)
+            		forwardGPU(model, state, new int[]{token}, position, true);
+            	else
+            		forward(model, state, new int[]{token}, position, true);
             }
             nextToken = sampler.sampleToken(state.logits);
             if (echo) {
@@ -2470,7 +2465,6 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             }
             state.latestToken = token = nextToken;
         }
-
         long elapsedNanos = System.nanoTime() - startNanos;
         long promptNanos = startGen - startNanos;
         long genNanos = elapsedNanos - startGen + startNanos;
@@ -2480,70 +2474,6 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 generatedTokens.size() / (genNanos / 1_000_000_000.0), generatedTokens.size());
 
         return generatedTokens;
-    }
-    //--------------------------------
-    // GPU Test
-    public static List<Integer> generateTokensGPU(Llama model, State state, int startPosition, List<Integer> promptTokens, Set<Integer> stopTokens, int maxTokens, Sampler sampler, boolean echo,
-    		IntConsumer onTokenGenerated) {
-    	long startNanos = System.nanoTime();
-    	long startGen = 0;
-    	if (maxTokens < 0 || model.configuration().contextLength < maxTokens) {
-    		maxTokens = model.configuration().contextLength;
-    	}
-    	List<Integer> generatedTokens = new ArrayList<>(maxTokens);
-    	int token = state.latestToken; // BOS?
-    	int nextToken;
-    	int promptIndex = 0;
-    	for (int position = startPosition; position < maxTokens; ++position) {
-    		if (promptIndex < promptTokens.size()) {
-    			final int nTokens = Math.min(maxTokens - position, Math.min(promptTokens.size() - promptIndex, state.batchsize));
-    			final int[] tokens = new int[nTokens];
-    			for (int i = 0; i < nTokens; i++) {
-    				tokens[i] = promptTokens.get(promptIndex + i);
-    				if (echo) {
-    					// log prompt token (different color?)
-    					System.err.print(Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(tokens[i]))));
-    				}
-    			}
-    			if (echo) {
-    				System.out.format("position=%d, promptIdx=%d, promptSize=%d, tokens=%s%n", position, promptIndex, promptTokens.size(), Arrays.toString(tokens));
-    			}
-    			// Only compute logits on the very last batch.
-    			boolean computeLogits = promptIndex + nTokens >= promptTokens.size();
-    			forwardGPU(model, state, tokens, position, computeLogits);
-    			position += nTokens - 1; // -1 -> incremented later in the for loop
-    			promptIndex += nTokens;
-    			if (promptIndex < promptTokens.size()) {
-    				continue;
-    			}
-    			startGen = System.nanoTime();
-    		} else {
-    			forwardGPU(model, state, new int[]{token}, position, true);
-    		}
-    		nextToken = sampler.sampleToken(state.logits);
-    		if (echo) {
-    			// log inferred token
-    			System.err.print(Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(nextToken))));
-    		}
-    		generatedTokens.add(nextToken);
-    		if (onTokenGenerated != null) {
-    			onTokenGenerated.accept(nextToken);
-    		}
-    		if (stopTokens.contains(nextToken)) {
-    			break;
-    		}
-    		state.latestToken = token = nextToken;
-    	}
-
-    	long elapsedNanos = System.nanoTime() - startNanos;
-    	long promptNanos = startGen - startNanos;
-    	long genNanos = elapsedNanos - startGen + startNanos;
-    	System.err.printf("%ncontext: %d/%d prompt: %.2f tokens/s (%d) generation: %.2f tokens/s (%d)%n",
-    			startPosition + promptIndex + generatedTokens.size(), model.configuration().contextLength,
-    			promptTokens.size() / (promptNanos / 1_000_000_000.0), promptTokens.size(),
-    			generatedTokens.size() / (genNanos / 1_000_000_000.0), generatedTokens.size());
-
-    	return generatedTokens;
     }
 
     /**
