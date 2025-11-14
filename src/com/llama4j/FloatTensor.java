@@ -115,32 +115,32 @@ public abstract class FloatTensor implements Externalizable, Comparable {
       	}
 		return scalarDot(this, thisOffset, that, thatOffset, size);
     }
-    public static int dontMatch = 0;
-    public static int totalSdot = 0;
-    public static Object mutex = new Object();
+    //public static int dontMatch = 0;
+    //public static int totalSdot = 0;
+    //public static Object mutex = new Object();
     public static float cudaSdotSliceDevice(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
     	if(DEBUG)
     		System.out.printf("%s thread:%s thisOffset:%d thatOffset:%d size:%d%n", 
     				thiz.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size);
-    		synchronized(mutex) {
-     		float result2 = scalarDot(thiz, thisOffset, that, thatOffset, size);
+    		//synchronized(mutex) {
+     		//float result2 = scalarDot(thiz, thisOffset, that, thatOffset, size);
      		//float sdotSliceDevice(const uint8_t* qA, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
 			//	    const uint8_t* qB, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB,
 			//	    int N)
-     		++totalSdot;
+     		//++totalSdot;
     		float result = (float) Llama3.sdotSliceDeviceHandle.invokeExact(
     				thiz.devicePtrOr0(), thisOffset, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
     				that.devicePtrOr0(), thatOffset, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(),
     				size);
-    		if(Math.abs(result - result2) > 1e-5f) {
-    			++dontMatch;
-    			if(DEBUG)
-    				System.out.printf("Sdot values dont match: %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
-    				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, result, result2);
-    			return result2;
-    		}
+    		//if(Math.abs(result - result2) > 1e-5f) {
+    		//	++dontMatch;
+    		//	if(DEBUG)
+    		//		System.out.printf("Sdot values dont match: %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
+    		//		thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, result, result2);
+    		//	return result2;
+    		//}
       		return result;
-    		}
+    		//}
     }   
     public void allocDevice() {
     	devicePtr = allocDevice(getSegment().byteSize());
@@ -208,16 +208,20 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         MemorySegment hostSeg = getSegment();
         try {
             // Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
-            Llama3.copyDeviceToHostMH.invokeExact(devicePtr, hostSeg, bytes);
+            //Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), FloatTensor.devSeg(devicePtrOr0(), bytes, getArena()), bytes);
+            Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), hostSeg.address(), bytes);
         } catch (Throwable e) {
             throw new RuntimeException("DeviceToHost transfer failed for " + this, e);
         }
     }
+    
+    //launch_rmsnorm_fp32_rowmajor(uint8_t* qA, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
+    //uint8_t* qB, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB,
+    //float* out, int size, float eps) 
     static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) throws Throwable {
-    	MemorySegment xDev  = devSeg(x.devicePtrOr0(),      (long) size * Float.BYTES, x.getArena());
-        MemorySegment wDev  = devSeg(weight.devicePtrOr0(), (long) size * Float.BYTES, weight.getArena());
-        MemorySegment oDev  = devSeg(out.devicePtrOr0(),    (long) size * Float.BYTES, out.getArena());
-        Llama3.launchRmsnorm.invokeExact(xDev, wDev, oDev, size, eps);
+        Llama3.launchRmsnorm.invokeExact(x.devicePtrOr0(), 0, x.getFormatType(), x.type().getBlockSize(), x.type().getTypeSize(), x.getHeadSize(),
+        		weight.devicePtrOr0(), 0, weight.getFormatType(), weight.type().getBlockSize(), weight.type().getTypeSize(), weight.getHeadSize(),
+        		out.devicePtrOr0(), size, eps);
     }
     
     public static FloatTensor[] loadArrayOfF32Tensors(int size, IntFunction<GGMLTensorEntry> get) {

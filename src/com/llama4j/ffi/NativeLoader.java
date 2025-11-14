@@ -106,17 +106,29 @@ public final class NativeLoader {
 		Llama3.cudaGetMemInfo = linker.downcallHandle(
 				lookup.find("cudaGetMemInfo").get(),
 				FunctionDescriptor.ofVoid(
-						ValueLayout.ADDRESS,    // size_t* free
+						ValueLayout.ADDRESS,    // size_t* free, writes to memorysegments
 						ValueLayout.ADDRESS     // size_t* total
 						));
 		System.out.println("cudaGetMemInfo:"+Llama3.cudaGetMemInfo);
-		// Signature: void launch_rmsnorm_fp32_rowmajor(const float* x, const float* weight, float* out, int size, float eps)
+		//launch_rmsnorm_fp32_rowmajor(uint8_t* qA, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
+	    //uint8_t* qB, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB,
+	    //float* out, int size, float eps) {
 		Llama3.launchRmsnorm = linker.downcallHandle(
 				lookup.find("launch_rmsnorm_fp32_rowmajor").get(),
 				FunctionDescriptor.ofVoid(
-						ValueLayout.ADDRESS, // x
-						ValueLayout.ADDRESS, // weight
-						ValueLayout.ADDRESS, // out
+						ValueLayout.JAVA_LONG, // deviceptr x
+						ValueLayout.JAVA_INT, // offset into x
+						ValueLayout.JAVA_INT, // format x
+						ValueLayout.JAVA_INT, // blocksize x
+						ValueLayout.JAVA_INT, // typesiez x
+						ValueLayout.JAVA_INT, // headerbytes s
+						ValueLayout.JAVA_LONG, // deviceptr weights
+						ValueLayout.JAVA_INT, // offset into weights
+						ValueLayout.JAVA_INT, // format weights
+						ValueLayout.JAVA_INT, // blocksize weights
+						ValueLayout.JAVA_INT, // typesize weights
+						ValueLayout.JAVA_INT, // headerbytes weights
+						ValueLayout.JAVA_LONG, // deviceptr out
 						ValueLayout.JAVA_INT,   // size
 						ValueLayout.JAVA_FLOAT  // eps
 						)
@@ -192,7 +204,7 @@ public final class NativeLoader {
 	    Llama3.copyDeviceToHostMH = linker.downcallHandle(
 	        lookup.find("copyDeviceToHost").get(),
 	        FunctionDescriptor.ofVoid(ValueLayout.JAVA_LONG, // uint64_t device pt
-	                                  ValueLayout.ADDRESS,   // uint8_t* tensor
+	                                  ValueLayout.JAVA_LONG,   // uint8_t* tensor
 	                                  ValueLayout.JAVA_LONG) // size_t bytes
 	    );
 		System.out.println("copyDeviceToHost:"+Llama3.copyDeviceToHostMH);

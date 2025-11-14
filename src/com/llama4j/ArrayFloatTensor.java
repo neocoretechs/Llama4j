@@ -7,6 +7,8 @@ import java.io.ObjectOutput;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.Arrays;
 
@@ -119,8 +121,9 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
         MemorySegment hostSeg = getSegment();
         try {
             // Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
-            Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), hostSeg, bytes);
-            FloatBuffer fb = hostSeg.asByteBuffer().asFloatBuffer();
+            Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), /*FloatTensor.devSeg(devicePtrOr0(), bytes, getArena())*/hostSeg.address(), bytes);
+            ByteBuffer bb = hostSeg.asByteBuffer();
+            FloatBuffer fb = bb.asFloatBuffer();
             fb.get(values);
         } catch (Throwable e) {
             throw new RuntimeException("DeviceToHost tansfer failed for " + this, e);
