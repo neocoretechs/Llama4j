@@ -7,7 +7,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 public final class DeviceMemoryLedger {
-	public static boolean DEBUG = false;
+	public static boolean DEBUG = true;
 	private static final Log log = LogFactory.getLog(DeviceMemoryLedger.class);
     private static long baselineFree;
     private static long total;
@@ -55,6 +55,8 @@ public final class DeviceMemoryLedger {
             releaseCount = 0;
             lastRefreshNanos = now;
         }
+        if(DEBUG)
+        	log.info("DeviceMemoryLedger release:"+bytes);
     }
 
     private static void refresh() {
@@ -70,11 +72,15 @@ public final class DeviceMemoryLedger {
         total        = mtotal.get(ValueLayout.JAVA_LONG, 0);
         allocated    = 0;
         lastRefreshNanos = System.nanoTime();
+        if(DEBUG)
+        	log.info("Refreshing DeviceMemoryLedger free:"+baselineFree+" total:"+total);
     }
 
     public static synchronized void onAllocationFailure() {
         refreshInterval = MIN_INTERVAL;
         releaseCount = 0;
         lastRefreshNanos = System.nanoTime();
+        if(DEBUG)
+        	log.info("OnAllocationFailure DeviceMemoryLedger free:"+baselineFree+" total:"+total);
     }
 }

@@ -134,22 +134,6 @@ public final class NativeLoader {
 						)
 				);
 		System.out.println("launch_rmsnorm_fp32_rowmajor:"+Llama3.launchRmsnorm);
-		//launch_qk_scores_fp32_rowmajor(
-		// const float* Q, const uint8_t* K, float* S,
-		// int h, int nHeads, int headSize, int contextLength,
-		// int kvDim, int kvMul, int tMaxInclusive, int tensorSize, float sqrtHeadSize,
-		// int format, int blockSize, int typeSize, int headerBytes)
-		Llama3.launchQK = linker.downcallHandle(
-				lookup.find("launch_qk_scores_fp32_rowmajor").get(),
-				FunctionDescriptor.ofVoid(
-						ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, // Q, K, S
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // h, nHeads, headSize, contextLen
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_FLOAT,// kvDim, kvMul, tMaxInclusive, tensorSize, sqrtSize
-						ValueLayout.JAVA_INT, // format
-						ValueLayout.JAVA_INT ,ValueLayout.JAVA_INT,ValueLayout.JAVA_INT  // blocksize, typesize, headerbytes
-						)
-				);
-		System.out.println("launch_qk_scores_fp32_rowmajor:"+Llama3.launchQK);
 		Llama3.launchSoftmax = linker.downcallHandle(
 				lookup.find("launch_row_softmax_fp32").get(),
 				FunctionDescriptor.ofVoid(
@@ -168,19 +152,39 @@ public final class NativeLoader {
 						)
 				);
 		System.out.println("launch_row_softmax_inplace_fp32:"+Llama3.launchSoftmaxInplace);
+		//launch_weighted_sum(uint8_t* Att, uint8_t* xb, const uint8_t* vCache, 
+		//int h, int headSize, int attOffset, int xbOffset, int kvDim, int kvMul, int size)
 		Llama3.launchAV = linker.downcallHandle(
-			    lookup.find("launch_attention_av_weighted_sum").get(),
+			    lookup.find("launch_weighted_sum").get(),
 			    FunctionDescriptor.ofVoid(
-			        ValueLayout.ADDRESS, // attTok
-			        ValueLayout.ADDRESS, // vCacheRaw quantized/raw bytes for V: [contextLen*kvTypeSizeTotal]
-			        ValueLayout.ADDRESS, // xbTok [nHeads*headSize]
-			        //int nHeads, int headSize, int kvDim, int kvMul,int contextLen, int tMax,
-			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-			        // Quantization params for V. vBlockSize elements per quant block, vTypeSize bytes per block (header + payload), vheaderBytes bytes before payload, format: 1 for Q8, 2 for Q4, 3 for F16, 4 for BF16, 5 for F32
-			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT
+			        ValueLayout.JAVA_LONG, // Att
+			        ValueLayout.JAVA_LONG, // xb
+			        ValueLayout.JAVA_LONG, // vCache
+			        //int h, int headSize, int attOffset, int xbOffset, int kvDim, int kvMul
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, 
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+			        ValueLayout.JAVA_INT
 			    )
 			);
-		System.out.println("launch_attention_av_weighted_sum:"+Llama3.launchAV);
+		System.out.println("launch_weighted_sum:"+Llama3.launchAV);
+		// void launchMatmul(const uint8_t* qA, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
+		//	    const uint8_t* qB, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB,
+		//	    uint8_t* out, int dim0, int dim1) {
+		Llama3.launchMatmul = linker.downcallHandle(
+			    lookup.find("launch_Matmul").get(),
+			    FunctionDescriptor.ofVoid(
+			        ValueLayout.JAVA_LONG, // qA
+			        //int indexA, formatA, blockSizeA, typeSizeA, headerBytesA
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+			        ValueLayout.JAVA_LONG, // qB
+			        //int indexA, formatA, blockSizeA, typeSizeA, headerBytesA
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+			        ValueLayout.JAVA_LONG, // out
+			        ValueLayout.JAVA_INT, // dim0
+			        ValueLayout.JAVA_INT // dim1
+			    )
+			);
+		System.out.println("launch_Matmul:"+Llama3.launchMatmul);
 	    Llama3.allocDevicePtr = linker.downcallHandle(
 		        lookup.find("allocDevicePtr").get(),
 		        FunctionDescriptor.of(ValueLayout.JAVA_LONG, // uint64_t device ptr

@@ -119,11 +119,7 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
     		try {
 				return cudaSdotSliceDevice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
 			} catch (Throwable e) {
-		   		if (FloatTensor.USE_VECTOR_API) {
-	    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-	    		} else {
-	    			return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-	    		}
+				throw new RuntimeException(e);
 			}
     	} else
     		if (FloatTensor.USE_VECTOR_API) {

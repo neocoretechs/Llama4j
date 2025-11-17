@@ -121,7 +121,7 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
         MemorySegment hostSeg = getSegment();
         try {
             // Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
-            Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), /*FloatTensor.devSeg(devicePtrOr0(), bytes, getArena())*/hostSeg.address(), bytes);
+            Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), hostSeg.address(), bytes);
             ByteBuffer bb = hostSeg.asByteBuffer();
             FloatBuffer fb = bb.asFloatBuffer();
             fb.get(values);
