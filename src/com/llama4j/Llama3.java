@@ -289,6 +289,14 @@ public class Llama3 {
                      		model.weights().rms_att_weight_dev[i].allocDevice();
                      		model.weights().rms_att_weight_dev[i].copyHostToDevice();
                 		}
+                		log.info("Weights freq_cis_real="+model.weights().freq_cis_real_dev.size());
+                		model.weights().freq_cis_real_dev.allocDevice();
+                		model.weights().freq_cis_real_dev.copyHostToDevice();
+                		
+                 		log.info("Weights freq_cis_imag="+model.weights().freq_cis_imag_dev.size());
+                		model.weights().freq_cis_imag_dev.allocDevice();
+        				model.weights().freq_cis_imag_dev.copyHostToDevice();
+        				
                   		log.info("Weights wcls="+model.weights().wcls.size());
                      	model.weights().wcls.allocDevice();
                      	model.weights().wcls.copyHostToDevice();
@@ -1283,10 +1291,10 @@ final class ModelLoader {
         int oldContextLength = 8192;
         Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLength, config.headSize, config.ropeTheta,
                 ropeScaling, scaleFactor, loFreqFactor, hiFreqFactor, oldContextLength);
-        float[] ropeFreqsReal = ropeFreqs.first();
-        float[] ropeFreqsImag = ropeFreqs.second();
-
+ 
         GGMLTensorEntry tokenEmbeddings = tensorEntries.get("token_embd.weight");
+        FloatTensor ropeReal   = new F32FloatTensor(ropeFreqs.first().length, MemorySegment.ofArray(ropeFreqs.first()));
+        FloatTensor ropeImag   = new F32FloatTensor(ropeFreqs.second().length, MemorySegment.ofArray(ropeFreqs.second()));
         
         Llama.Weights qw = new Llama.Weights(
                 loadQuantized(tokenEmbeddings),
@@ -1300,8 +1308,8 @@ final class ModelLoader {
                 loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_down.weight")), // w2
                 loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_up.weight")), // w3
                 Llama.Weights.wrapTensor(tensorEntries.get("output_norm.weight")),
-                FloatBuffer.wrap(ropeFreqsReal),
-                FloatBuffer.wrap(ropeFreqsImag),
+                ropeReal,
+                ropeImag,
                 // If "output.weight" is not present then the embedding weights are tied/shared with the decoder.
                 // This is commonly referred as "tie word embeddings".
                 loadQuantized(tensorEntries.getOrDefault("output.weight", tokenEmbeddings))
@@ -1378,8 +1386,8 @@ final class ModelLoader {
         FloatTensor outNorm    = Llama.Weights.wrapTensor(T.get("output_norm.weight"));
         FloatTensor outWeight  = Llama.Weights.wrapTensor(T.get("output.weight"));
 
-        //FloatTensor ropeReal   = new F32FloatTensor(rope.first().length, MemorySegment.ofArray(rope.first()));
-        //FloatTensor ropeImag   = new F32FloatTensor(rope.second().length, MemorySegment.ofArray(rope.second()));
+        FloatTensor ropeReal   = new F32FloatTensor(rope.first().length, MemorySegment.ofArray(rope.first()));
+        FloatTensor ropeImag   = new F32FloatTensor(rope.second().length, MemorySegment.ofArray(rope.second()));
 
         return new Llama.Weights(
             tokenEmb,
@@ -1389,8 +1397,8 @@ final class ModelLoader {
             ffnNorm,
             ffnGate, ffnDown, ffnUp,
             outNorm,
-            FloatBuffer.wrap(rope.first()),     // keep compatibility for now
-            FloatBuffer.wrap(rope.second()),
+            ropeReal,     // keep compatibility for now
+            ropeImag,
             outWeight
         );
     }
@@ -1575,9 +1583,9 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         public FloatBuffer[] rms_ffn_weight; // (layer, dim)
         public FloatBuffer rms_final_weight; // (dim,)
         // GPU-friendly rmsnorms
-        public FloatTensor[] rms_att_weight_dev;
-        public FloatTensor[] rms_ffn_weight_dev;
-        public FloatTensor rms_final_weight_dev;
+        public FloatTensor[] rms_att_weight_dev; // GPU (layer, dim) rmsnorm weights
+        public FloatTensor[] rms_ffn_weight_dev; // GPU (layer, dim)
+        public FloatTensor rms_final_weight_dev; // GPU (layer, dim)
 
         // weights for matmuls
         public final FloatTensor[] wq; // (layer, n_heads * head_size)
@@ -1596,8 +1604,10 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         public final FloatTensor[] w3; // (layer, hidden_dim, dim)
  
         // freq_cis for RoPE relatively positional embeddings
-        public final FloatBuffer freq_cis_real; // (seq_len, head_size/2)
-        public final FloatBuffer freq_cis_imag; // (seq_len, head_size/2)
+        public FloatBuffer freq_cis_real; // (seq_len, head_size/2)
+        public FloatBuffer freq_cis_imag; // (seq_len, head_size/2)
+        public FloatTensor freq_cis_real_dev; // GPU(seq_len, head_size/2)
+        public FloatTensor freq_cis_imag_dev; // GPU(seq_len, head_size/2)
         // (optional) classifier weights for the logits, on the last layer
         public final FloatTensor wcls; // (vocab_size, dim)
         /**
@@ -1693,7 +1703,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         public Weights(FloatTensor token_embedding_table, FloatTensor[] rms_att_weight, FloatTensor[] wq, 
         		FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] wo, 
         		FloatTensor[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, 
-        		FloatTensor[] w3, FloatTensor rms_final_weight, FloatBuffer freq_cis_real, FloatBuffer freq_cis_imag, 
+        		FloatTensor[] w3, FloatTensor rms_final_weight, FloatTensor freq_cis_real_dev, FloatTensor freq_cis_imag_dev, 
         		FloatTensor wcls) {
             this.token_embedding_table = token_embedding_table;
             this.rms_att_weight_dev = rms_att_weight;
@@ -1706,8 +1716,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             this.w2 = w2;
             this.w3 = w3;
             this.rms_final_weight_dev = rms_final_weight;
-            this.freq_cis_real = freq_cis_real;
-            this.freq_cis_imag = freq_cis_imag;
+            this.freq_cis_real_dev = freq_cis_real_dev;
+            this.freq_cis_imag_dev = freq_cis_imag_dev;
             this.wcls = wcls;
         }
 
@@ -1993,14 +2003,12 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     	System.out.println("Starting forward inference");
     	Configuration config = model.configuration();
     	Weights weights = model.weights();
-    	System.out.println("Weights="+weights.toString());
     	int dim = config.dim;
     	int headSize = config.headSize;
     	int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
     	int kvMul = config.numberOfHeads / config.numberOfKeyValueHeads; // integer multiplier of the kv sharing in multiquery
     	float sqrtHeadSize = (float) Math.sqrt(headSize);
     	final int nTokens = tokens.length;
-    	System.out.println("Tokens len="+tokens.length);
     	// copy the token embedding into x
     	Parallel.parallelFor(0, nTokens, t ->
     		weights.token_embedding_table.copyTo(tokens[t] * dim, state.x[t], 0, dim)
@@ -2038,11 +2046,17 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         	timer.close();
     		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
     		// RoPE relative positional encoding: complex-valued rotate q and k in each head
+     		for(int i = 0; i < state.q.length; i++) {
+    			state.q[i].copyDeviceToHost("stte.q for RoPE");
+      		}
+      		for(int i = 0; i < state.k.length; i++) {
+    			state.k[i].copyDeviceToHost("state.k for RoPE");
+      		}
     		Parallel.parallelFor(0, nTokens, t -> {
     			for (int i = 0; i < dim; i += 2) {
     				int head_dim = i % headSize;
-    				float fcr = weights.freq_cis_real.get((position + t) * (headSize / 2) + (head_dim / 2));
-    				float fci = weights.freq_cis_imag.get((position + t) * (headSize / 2) + (head_dim / 2));
+    				float fcr = weights.freq_cis_real_dev.getFloat((position + t) * (headSize / 2) + (head_dim / 2));
+    				float fci = weights.freq_cis_imag_dev.getFloat((position + t) * (headSize / 2) + (head_dim / 2));
     				int rotn = i < kvDim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
     				for (int vi = 0; vi < rotn; vi++) {
     					FloatTensor vec = vi == 0 ? state.q[t] : state.k[t]; // the vector to rotate (query or key)
@@ -2057,13 +2071,14 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		//try (Timer timer = Timer.log("Save kv layer:"+l,TimeUnit.MICROSECONDS)) {
     		// save key,value at this time step (position) to our kv cache
     		//int loff = l * config.seq_len * kvDim; // kv cache layer offset for convenience
-    		Parallel.parallelFor(0, nTokens, t -> {
-    			state.k[t].copyDeviceToHost("key to keyCache");
-    			state.k[t].copyTo(0, state.keyCache[curLayer], (position + t) * kvDim, kvDim);
-    			state.v[t].copyDeviceToHost("value to valueCache");
-    			state.v[t].copyTo(0, state.valueCache[curLayer], (position + t) * kvDim, kvDim);
-    		});
-    		//}
+    		//Parallel.parallelFor(0, nTokens, t -> {
+    		for(int i = 0; i < nTokens; i++) {
+    			state.k[i].copyDeviceToHost("key to keyCache");
+    			state.k[i].copyTo(0, state.keyCache[curLayer], (position + i) * kvDim, kvDim);
+    			state.v[i].copyDeviceToHost("value to valueCache");
+    			state.v[i].copyTo(0, state.valueCache[curLayer], (position + i) * kvDim, kvDim);
+    		//});
+    		}
     		// If the logits are not required, the attention and FFN of the last layer can be skipped entirely.
     		if (!computeLogits && curLayer == config.numberOfLayers - 1) {
     			state.idxPrevBlock = nTokens - 1;

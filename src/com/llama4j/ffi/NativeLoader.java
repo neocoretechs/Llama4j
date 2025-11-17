@@ -92,14 +92,14 @@ public final class NativeLoader {
 						ValueLayout.JAVA_INT	  // Number of elements in tensor
 						));
 		System.out.println("sdotSliceDevice:"+Llama3.sdotSliceDeviceHandle);
-		System.out.println("cublasHandle:"+Llama3.cublasGetHandle);
-		Llama3.cublasFreeHandle = linker.downcallHandle(
-				lookup.find("cublasHandleDestroy").get(),
-				FunctionDescriptor.ofVoid(
-						// return void
-						ValueLayout.JAVA_LONG  // pass long handle
-						));
-		System.out.println("cublasHandleDestroy:"+Llama3.cublasFreeHandle);
+		//System.out.println("cublasHandle:"+Llama3.cublasGetHandle);
+		//Llama3.cublasFreeHandle = linker.downcallHandle(
+		//		lookup.find("cublasHandleDestroy").get(),
+		//		FunctionDescriptor.ofVoid(
+		//				// return void
+		//				ValueLayout.JAVA_LONG  // pass long handle
+		//				));
+		//System.out.println("cublasHandleDestroy:"+Llama3.cublasFreeHandle);
 		Llama3.cudaInit = linker.downcallHandle(
 				lookup.find("cudaInit").get(),
 				FunctionDescriptor.ofVoid());

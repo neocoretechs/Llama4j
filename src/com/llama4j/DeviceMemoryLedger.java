@@ -7,7 +7,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 public final class DeviceMemoryLedger {
-	public static boolean DEBUG = true;
+	public static boolean DEBUG = false;
 	private static final Log log = LogFactory.getLog(DeviceMemoryLedger.class);
     private static long baselineFree;
     private static long total;
