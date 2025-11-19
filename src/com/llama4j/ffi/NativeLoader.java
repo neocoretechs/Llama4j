@@ -67,9 +67,33 @@ public final class NativeLoader {
 		if(!FloatTensor.USE_CUDA)
 			return;
 		Linker linker = Linker.nativeLinker();
-		System.out.println("linker:"+linker);
+		//System.out.println("linker:"+linker);
 		SymbolLookup lookup = SymbolLookup.loaderLookup();
-		System.out.println("Loader:"+lookup);
+		//System.out.println("Loader:"+lookup);
+		//
+		//float getFloat(const uint64_t q, int index, int blockSize, int typeSize, int headerBytes) {
+		//    const float* d_q = reinterpret_cast<const float*>(q);
+		Llama3.getFloatQ8 = linker.downcallHandle(
+				lookup.find("getFloatQ8").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,    // device A
+						ValueLayout.JAVA_INT ,    // offset A
+						ValueLayout.JAVA_INT,     // blockSize A for format
+						ValueLayout.JAVA_INT,     // typeSize A for format
+						ValueLayout.JAVA_INT      // headerBytes A for format
+						));
+		System.out.println("getFloatQ8:"+Llama3.getFloatQ8);
+		//float getFloat(const uint64_t q, int index)
+		Llama3.getFloat = linker.downcallHandle(
+				lookup.find("getFloat").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,    // device A
+						ValueLayout.JAVA_INT    // offset A
+						));
+		System.out.println("getFloat:"+Llama3.getFloat);
+		//
 		Llama3.sdotSliceDeviceHandle = linker.downcallHandle(
 				lookup.find("sdotSliceDevice").get(),
 				FunctionDescriptor.of(
@@ -185,6 +209,27 @@ public final class NativeLoader {
 			    )
 			);
 		System.out.println("launch_Matmul:"+Llama3.launchMatmul);
+		//float launch_cpu_scalar_Dot(const uint8_t* d_q, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
+		//	    const uint8_t* d_k, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB, int size)
+		Llama3.sdotSimple = linker.downcallHandle(
+				lookup.find("launch_cpu_scalar_Dot").get(),
+				FunctionDescriptor.of(
+						ValueLayout.JAVA_FLOAT,   // return float
+						ValueLayout.JAVA_LONG,    // device A
+						ValueLayout.JAVA_INT ,    // offset A
+						ValueLayout.JAVA_INT,     // format A (1-5 = Q8,Q4,F16,BF16,F32)
+						ValueLayout.JAVA_INT,     // blockSize A for format
+						ValueLayout.JAVA_INT,     // typeSize A for format
+						ValueLayout.JAVA_INT,     // headerBytes A for format
+						ValueLayout.JAVA_LONG,    // device B
+						ValueLayout.JAVA_INT,     // offset B
+						ValueLayout.JAVA_INT,     // format B
+						ValueLayout.JAVA_INT,     // blocksize B
+						ValueLayout.JAVA_INT,     // typeSize B
+						ValueLayout.JAVA_INT,     // headerBytes B
+						ValueLayout.JAVA_INT	  // Number of elements in tensor
+						));
+		System.out.println("launch_cpu_scalar_Dot:"+Llama3.sdotSimple);
 	    Llama3.allocDevicePtr = linker.downcallHandle(
 		        lookup.find("allocDevicePtr").get(),
 		        FunctionDescriptor.of(ValueLayout.JAVA_LONG, // uint64_t device ptr

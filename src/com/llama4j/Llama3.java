@@ -93,10 +93,13 @@ public class Llama3 {
 	public static Arena autoArena = Arena.ofAuto();
 	public static Arena sharedArena = Arena.ofShared();
 	//
+	public static MethodHandle getFloatQ8;
+	public static MethodHandle getFloat;
 	public static MethodHandle sdotSliceDeviceHandle;
     public static MethodHandle cublasGetHandle;
     public static MethodHandle cublasFreeHandle;
     public static MethodHandle cudaGetMemInfo;
+    public static MethodHandle sdotSimple;
     public static MethodHandle launchRmsnorm;
     public static MethodHandle launchQK;
     public static MethodHandle launchSoftmax;
@@ -247,98 +250,98 @@ public class Llama3 {
                 		log.info("Weights wo="+model.weights().wo.length+" tensors.");
                 		for(int i = 0; i < model.weights().wo.length; i++) {
                       		model.weights().wo[i].allocDevice();
-                     		model.weights().wo[i].copyHostToDevice();
+                     		model.weights().wo[i].copyHostToDevice("Weights wo i="+i);
                 		}
                   		log.info("Weights wq="+model.weights().wq.length+" tensors.");
                 		for(int i = 0; i < model.weights().wq.length; i++)  {
                        		model.weights().wq[i].allocDevice();
-                     		model.weights().wq[i].copyHostToDevice();
+                     		model.weights().wq[i].copyHostToDevice("Weights wq i="+i);
                 		}
                   		log.info("Weights wk="+model.weights().wk.length+" tensors.");
                 		for(int i = 0; i < model.weights().wk.length; i++) {
                      		model.weights().wk[i].allocDevice();
-                     		model.weights().wk[i].copyHostToDevice();
+                     		model.weights().wk[i].copyHostToDevice("Weights wk i="+i);
                 		}
                   		log.info("Weights wv="+model.weights().wv.length+" tensors.");
                 		for(int i = 0; i < model.weights().wv.length; i++) {
                     		model.weights().wv[i].allocDevice();
-                     		model.weights().wv[i].copyHostToDevice();
+                     		model.weights().wv[i].copyHostToDevice("Weights wv i="+i);
                 		}
                 		log.info("Weights w1="+model.weights().w1.length+" tensors.");
                 		for(int i = 0; i < model.weights().w1.length; i++) {
                      		model.weights().w1[i].allocDevice();
-                     		model.weights().w1[i].copyHostToDevice();
+                     		model.weights().w1[i].copyHostToDevice("Weights w1 i="+i);
                 		}
                 		log.info("Weights w2="+model.weights().w2.length+" tensors.");
                 		for(int i = 0; i < model.weights().w2.length; i++) {
                      		model.weights().w2[i].allocDevice();
-                     		model.weights().w2[i].copyHostToDevice();
+                     		model.weights().w2[i].copyHostToDevice("Weights w2 i="+i);
                 		}
                 		log.info("Weights w3="+model.weights().w3.length+" tensors.");
                 		for(int i = 0; i < model.weights().w3.length; i++) {
                      		model.weights().w3[i].allocDevice();
-                     		model.weights().w3[i].copyHostToDevice();
+                     		model.weights().w3[i].copyHostToDevice("Weights w3 i="+i);
                 		}
                 		log.info("Weights rms_ffn_weight_dev="+model.weights().rms_ffn_weight_dev.length+" tensors.");
                 		for(int i = 0; i < model.weights().rms_ffn_weight_dev.length; i++) {
                      		model.weights().rms_ffn_weight_dev[i].allocDevice();
-                     		model.weights().rms_ffn_weight_dev[i].copyHostToDevice();
+                     		model.weights().rms_ffn_weight_dev[i].copyHostToDevice("Weights rms_ffn_weight i="+i);
                 		}
                 		log.info("Weights rms_att_weight_dev="+model.weights().rms_att_weight_dev.length+" tensors.");
                 		for(int i = 0; i < model.weights().rms_att_weight_dev.length; i++) {
                      		model.weights().rms_att_weight_dev[i].allocDevice();
-                     		model.weights().rms_att_weight_dev[i].copyHostToDevice();
+                     		model.weights().rms_att_weight_dev[i].copyHostToDevice("Weights rms_att_weight i="+i);
                 		}
                 		log.info("Weights freq_cis_real="+model.weights().freq_cis_real_dev.size());
                 		model.weights().freq_cis_real_dev.allocDevice();
-                		model.weights().freq_cis_real_dev.copyHostToDevice();
+                		model.weights().freq_cis_real_dev.copyHostToDevice("Weights freq_cis_real");
                 		
                  		log.info("Weights freq_cis_imag="+model.weights().freq_cis_imag_dev.size());
                 		model.weights().freq_cis_imag_dev.allocDevice();
-        				model.weights().freq_cis_imag_dev.copyHostToDevice();
+        				model.weights().freq_cis_imag_dev.copyHostToDevice("Weights freq_cis_imag");
         				
                   		log.info("Weights wcls="+model.weights().wcls.size());
                      	model.weights().wcls.allocDevice();
-                     	model.weights().wcls.copyHostToDevice();
+                     	model.weights().wcls.copyHostToDevice("Weight wcls");
                 	}
                     try (Timer timer = Timer.log("State to device..")) {
                    		log.info("State.q="+state.q.length+" tensors.");
                 	   	for(int i = 0; i < state.q.length; i++) {
                     		state.q[i].allocDevice();
-                    		state.q[i].copyHostToDevice();
+                    		state.q[i].copyHostToDevice("State.q i="+i);
                     	}
                 		log.info("State.k="+state.k.length+" tensors.");
                        	for(int i = 0; i < state.k.length; i++) {
                     		state.k[i].allocDevice();
-                    		state.k[i].copyHostToDevice();
+                    		state.k[i].copyHostToDevice("State.k i="+i);
                     	}
                 		log.info("State.v="+state.v.length+" tensors.");
                        	for(int i = 0; i < state.v.length; i++) {
                     		state.v[i].allocDevice();
-                    		state.v[i].copyHostToDevice();
+                    		state.v[i].copyHostToDevice("State.v i="+i);
                     	}
                 		log.info("State.hb="+state.hb.length+" tensors.");
                   		for(int i = 0; i < state.hb.length; i++) {
                 			state.hb[i].allocDevice();
-                			state.hb[i].copyHostToDevice();
+                			state.hb[i].copyHostToDevice("State.hb i="+i);
                 		}
                 		log.info("State.hb2="+state.hb2.length+" tensors.");
                  		for(int i = 0; i < state.hb2.length; i++) {
                 			state.hb2[i].allocDevice();
-                			state.hb2[i].copyHostToDevice();
+                			state.hb2[i].copyHostToDevice("State.hb2 i="+i);
                 		}        		
                 		log.info("State.logits="+state.logits.size()+" elements.");
                  		state.logits.allocDevice();
-                 		state.logits.copyHostToDevice();
+                 		state.logits.copyHostToDevice("State.logits");
                  		log.info("State.q="+state.q.length+" tensors.");
                 		for(int i = 0; i < state.q.length; i++) {
                 			state.q[i].allocDevice();
-                			state.q[i].copyHostToDevice();
+                			state.q[i].copyHostToDevice("State.q i="+i);
                 		}
                  		log.info("State.att="+state.att.length+" tensors.");
                 		for(int i = 0; i < state.att.length; i++) {
                        		state.att[i].allocDevice();
-                			state.att[i].copyHostToDevice();
+                			state.att[i].copyHostToDevice("State.att i="+i);
                 		}
                 	}
                 }
@@ -1293,8 +1296,9 @@ final class ModelLoader {
                 ropeScaling, scaleFactor, loFreqFactor, hiFreqFactor, oldContextLength);
  
         GGMLTensorEntry tokenEmbeddings = tensorEntries.get("token_embd.weight");
-        FloatTensor ropeReal   = new F32FloatTensor(ropeFreqs.first().length, MemorySegment.ofArray(ropeFreqs.first()));
-        FloatTensor ropeImag   = new F32FloatTensor(ropeFreqs.second().length, MemorySegment.ofArray(ropeFreqs.second()));
+
+        FloatTensor ropeReal   = new F32FloatTensor(ropeFreqs.first().length, Llama3.autoArena.allocate(ValueLayout.JAVA_FLOAT, (long)ropeFreqs.first().length));
+        FloatTensor ropeImag   = new F32FloatTensor(ropeFreqs.second().length, Llama3.autoArena.allocate(ValueLayout.JAVA_FLOAT, (long)ropeFreqs.second().length));
         
         Llama.Weights qw = new Llama.Weights(
                 loadQuantized(tokenEmbeddings),
@@ -2021,36 +2025,55 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		for(int t = 0; t < nTokens; t++) {
       			state.xb[t].allocDevice(); // alloc out for RMSNorm
       			state.x[t].allocDevice();
-      			state.x[t].copyHostToDevice();
+      			state.x[t].copyHostToDevice("state.x[t]");
     		}
+    		Timer timer = Timer.log("rms norm:"+curLayer);
     		Parallel.parallelFor(0, nTokens, t -> {
     			rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight_dev[curLayer], dim, config.rmsNormEps);
     		});
+    		timer.close();
       		for(int i = 0; i < state.q.length; i++) {
+      			//timer = Timer.log("alloc q: layer="+curLayer+" i="+i, TimeUnit.MICROSECONDS);
     			state.q[i].allocDevice();
-    			state.q[i].copyHostToDevice();
+    			//timer.close();
+      			//timer = Timer.log("copy q: layer="+curLayer+" i="+i, TimeUnit.MICROSECONDS);
+    			state.q[i].copyHostToDevice("state.q[i]");
+    			//timer.close();
       		}
       		for(int i = 0; i < state.k.length; i++) {
+    			//timer = Timer.log("alloc k: layer="+curLayer+" i="+i, TimeUnit.MICROSECONDS);
      			state.k[i].allocDevice();
-    			state.k[i].copyHostToDevice();
+     			//timer.close();
+    			//timer = Timer.log("copy k: layer="+curLayer+" i="+i, TimeUnit.MICROSECONDS);
+    			state.k[i].copyHostToDevice("state.k[i]");
+    			//timer.close();
       		}
       		for(int i = 0; i < state.v.length; i++) {
+      			//timer = Timer.log("alloc v: layer="+curLayer+" i="+i, TimeUnit.MICROSECONDS);
      			state.v[i].allocDevice();
-    			state.v[i].copyHostToDevice();
+     			//timer.close();
+      			//timer = Timer.log("copy v: layer="+curLayer+" i="+i, TimeUnit.MICROSECONDS);
+    			state.v[i].copyHostToDevice("state.v[i]");
+    			//timer.close();
     		}
-    		Timer timer = Timer.log("qkv matmuls layer:"+curLayer/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS);
+    		timer = Timer.log("wq matmul layer:"+curLayer/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS);
     		// qkv matmuls for this position
     		weights.wq[curLayer].matmul(nTokens, state.xb, state.q, dim, dim);
+    		timer.close();
+    		timer = Timer.log("wk matmul layer:"+curLayer,TimeUnit.MICROSECONDS);
     		weights.wk[curLayer].matmul(nTokens, state.xb, state.k, kvDim, dim);
+    		timer.close();
+    		timer = Timer.log("wv matmul layer:"+curLayer,TimeUnit.MICROSECONDS);
     		weights.wv[curLayer].matmul(nTokens, state.xb, state.v, kvDim, dim);	
         	timer.close();
     		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
     		// RoPE relative positional encoding: complex-valued rotate q and k in each head
+    		timer = Timer.log("RoPE parallel:"+curLayer,TimeUnit.MICROSECONDS);
      		for(int i = 0; i < state.q.length; i++) {
-    			state.q[i].copyDeviceToHost("stte.q for RoPE");
+    			state.q[i].copyDeviceToHost("state.q[i] for RoPE i="+i);
       		}
       		for(int i = 0; i < state.k.length; i++) {
-    			state.k[i].copyDeviceToHost("state.k for RoPE");
+    			state.k[i].copyDeviceToHost("state.k[i] for RoPE i="+i);
       		}
     		Parallel.parallelFor(0, nTokens, t -> {
     			for (int i = 0; i < dim; i += 2) {
@@ -2067,15 +2090,16 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     				}
     			}
     		});
+    		timer.close();
     		//}         
     		//try (Timer timer = Timer.log("Save kv layer:"+l,TimeUnit.MICROSECONDS)) {
     		// save key,value at this time step (position) to our kv cache
     		//int loff = l * config.seq_len * kvDim; // kv cache layer offset for convenience
     		//Parallel.parallelFor(0, nTokens, t -> {
     		for(int i = 0; i < nTokens; i++) {
-    			state.k[i].copyDeviceToHost("key to keyCache");
+    			state.k[i].copyDeviceToHost("state.k[i] i="+i);
     			state.k[i].copyTo(0, state.keyCache[curLayer], (position + i) * kvDim, kvDim);
-    			state.v[i].copyDeviceToHost("value to valueCache");
+    			state.v[i].copyDeviceToHost("state.v[i] i="+i);
     			state.v[i].copyTo(0, state.valueCache[curLayer], (position + i) * kvDim, kvDim);
     		//});
     		}
@@ -2086,9 +2110,9 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		}
     		timer = Timer.log("KV cache upload layer:"+curLayer+" k="+state.keyCache[curLayer].size()+" v="+state.valueCache[curLayer].size(),TimeUnit.MICROSECONDS);
     			state.keyCache[curLayer].allocDevice();
-    			state.keyCache[curLayer].copyHostToDevice("keyCache for current layer");
+    			state.keyCache[curLayer].copyHostToDevice("state.keyCache[curLayer] curLayer="+curLayer);
     			state.valueCache[curLayer].allocDevice();
-    			state.valueCache[curLayer].copyHostToDevice("valueCache for current Layer");
+    			state.valueCache[curLayer].copyHostToDevice("state.valueCache[curLayer] curLayer="+curLayer);
     		timer.close();
     		// original multihead attention. iterate over all heads
     		timer = Timer.log("CPU Multihead Attn layer:"+curLayer/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS);
@@ -2121,7 +2145,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     			// memset(xb, 0, headSize * sizeof(float));
     			state.xb[token].fillInPlace(xbOffset, headSize, 0f);
     			// fillInPlace fills both GPU and local memory
-    			state.att[token].copyDeviceToHost(); // bring Att down from softMaxKernel
+    			state.att[token].copyDeviceToHost("state.att[token]"); // bring Att down from softMaxKernel
     			for (int t = 0; t <= position + token; t++) {
     				// get the value vector for this head and at this timestep
     				// float* v = s.value_cache + loff + t * dim + h * headSize;
@@ -2132,7 +2156,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     				state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
     			}
     			//weightedSum(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, token + position);
-  				state.xb[token].copyDeviceToHost(); // set up for downstream rmsnorm
+  				state.xb[token].copyDeviceToHost("state.xb[token]"); // set up for downstream rmsnorm
     		});
     		timer.close();
     		//----end original multihead attention
@@ -2141,26 +2165,28 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		// range of matmul is dim0 * context
     		for(int i = 0; i < state.xb2.length; i++) {
     				state.xb2[i].allocDevice();
-    				state.xb2[i].copyHostToDevice("xb2 for final matmul"); // set up for matmul
+    				state.xb2[i].copyHostToDevice("state.xb2[i] i="+i+" for final matmul"); // set up for matmul
     		}
     		weights.wo[curLayer].matmul(nTokens, state.xb, state.xb2, dim, dim);
     		// residual connection back into x
     		for(int t = 0; t < nTokens; t++)
-    			state.xb2[t].copyDeviceToHost("xb2 from final matmul"); // from above matmul
+    			state.xb2[t].copyDeviceToHost("state.xb2[t] t="+t+" from final matmul"); // from above matmul
     		Parallel.parallelFor(0, nTokens, t -> {
+    			state.x[t].copyDeviceToHost("state.x[t] addInPlace t="+t);
     			state.x[t].addInPlace(state.xb2[t]);
     		});
      		for(int t = 0; t < nTokens; t++)
-    			state.xb2[t].copyHostToDevice("xb2 from final matmul"); // from above matmul
+    			state.xb2[t].copyHostToDevice("state.xb2[t] t="+t+" from final matmul"); // from above matmul
     		timer.close();
     		timer = Timer.log("FFN RMSNorm layer:"+l,TimeUnit.MICROSECONDS);
     		// ffn rmsnorm
     		Parallel.parallelFor(0, nTokens, t -> {
+    			state.x[t].copyHostToDevice("state.x[t] rmsnorm ffn t="+t);
     			rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight_dev[curLayer], dim, config.rmsNormEps);
     		});
     		timer.close();
     		for(int t = 0; t < nTokens; t++)
-    			state.xb[t].copyDeviceToHost();
+    			state.xb[t].copyDeviceToHost("state.xb[t] t="+t+" from RMSNorm");
     		timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS);
     		// Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
     		// first calculate self.w1(x) and self.w3(x)
@@ -2169,8 +2195,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		// SwiGLU non-linearity
     		// silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
       		for(int i = 0; i < nTokens; i++) {
-    			state.hb[i].copyDeviceToHost("hb from FFN for SwiGLU");
-    			state.hb2[i].copyDeviceToHost("hb2 from FFN for SwiGLU");
+    			state.hb[i].copyDeviceToHost("state.hb[i] i="+i+" from FFN for SwiGLU");
+    			state.hb2[i].copyDeviceToHost("state.hb2[i] i="+i+" from FFN for SwiGLU");
     		}
     		Parallel.parallelFor(0, nTokens, t -> {
     			state.hb[t].mapInPlace(value -> value / (float) (1.0 + Math.exp(-value)));
@@ -2182,24 +2208,25 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		// final matmul to get the output of the ffn
     		weights.w2[curLayer].matmul(nTokens, state.hb, state.xb, dim, config.hiddenDim);
     		for(int i = 0; i < nTokens; i++) {
-    			state.x[i].copyDeviceToHost();
-    			state.xb[i].copyDeviceToHost();
+    			state.x[i].copyDeviceToHost("state.x[i] i="+i+" final matmul");
+    			state.xb[i].copyDeviceToHost("state.xb[i] i="+i+" final matmul");
     		}
     		// residual connection
     		Parallel.parallelFor(0, nTokens, t -> {
+    			state.x[t].copyDeviceToHost("state.x[t] residual t="+t);
     			state.x[t].addInPlace(state.xb[t]);
     		});
     		timer.close();
   			state.keyCache[curLayer].freeDevice();
 			state.valueCache[curLayer].freeDevice();
     	}
-    	System.out.println("<<<END LAYER LOOP, final RMSNorm:"+nTokens+" state.x="+state.x.length+" rms_final_weight size="+weights.rms_final_weight_dev.size());
+    	System.out.println("<<<END LAYER LOOP>>>");
     	// final rmsnorm
     	Parallel.parallelFor(0, nTokens, t -> {
     		state.x[t].copyHostToDevice("state.x for final RMS norm");
     		rmsnorm(state.x[t], state.x[t], weights.rms_final_weight_dev, dim, config.rmsNormEps);
     	});      
-    	System.out.println("Classifier in to logits weights.wcls size=:"+weights.wcls.size());
+    	System.out.println("Classifier into logits weights.wcls size=:"+weights.wcls.size());
     	// classifier into logits
     	weights.wcls.matmul(state.x[nTokens - 1], state.logits, config.vocabularySize, dim);
     	state.idxPrevBlock = nTokens - 1;
@@ -2224,7 +2251,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
 		}
 		*/
  		//System.out.println(FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total.");
- 		state.logits.copyDeviceToHost();
+ 		state.logits.copyDeviceToHost("state.logits");
     	return state.logits;
     }
     
