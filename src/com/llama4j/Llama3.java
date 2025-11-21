@@ -116,6 +116,7 @@ public class Llama3 {
 	public static BufferPool poolScalar = new BufferPool();
 	
 	static ArrayFloatTensor testTensor = null;
+	
 
 	static {
 		NativeLoader.load();
@@ -1800,12 +1801,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     
     static void rmsnorm(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float rmsNormEps) {
     	if(FloatTensor.USE_CUDA) {
-    		try {
-    			FloatTensor.rmsnormGpu(out, x, weight, size, rmsNormEps);
-    			return;
-    		} catch (Throwable e) {
-    			throw new RuntimeException(e);
-    		}
+    		DeviceManager.rmsnormGpu(out, x, weight, size, rmsNormEps);
+    		return;
     	}
     	// calculate sum of squares
     	float ss = x.reduce(0, size, 0f, (acc, xi) -> acc + xi * xi);
@@ -2123,39 +2120,38 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         			int qOffset = h * headSize;
         			int attOffset = h * config.contextLength;
     			// iterate over all timesteps, including the current one
-    			for (int t = 0; t <= position + token; t++) {
+    			//for (int t = 0; t <= position + token; t++) {
     			//	// get the key vector for this head and at this timestep
     				// float* k = s.key_cache + loff + t * dim + h * headSize;
-    				int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
+    				//int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
     				// calculate the attention score as the dot product of q and k
-    				float score = state.q[token].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
-    				score /= sqrtHeadSize;
+    				//float score = state.q[token].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+    				//score /= sqrtHeadSize;
     				// save the score to the attention buffer
-    				state.att[token].setFloat(attOffset + t, score);
-    			}
-    				//qkScores(state.q[token], qOffset, state.q[token].getFormatType(), state.q[token].type().getBlockSize(), state.q[token].type().getTypeSize(), state.q[token].getHeadSize(),
-					//	state.keyCache[curLayer], keyCacheOffset, state.keyCache[curLayer].getFormatType(), state.keyCache[curLayer].type().getBlockSize(), state.keyCache[curLayer].type().getTypeSize(), state.keyCache[curLayer].getHeadSize(),
-					//	state.att[token], attOffset, h, headSize, kvDim, kvMul, t, sqrtHeadSize);	
+    				//state.att[token].setFloat(attOffset + t, score);
+    			//}
+        			// compute qk scores and softmax on device
+    				DeviceManager.qkScores(state.q[token], qOffset, state.keyCache[curLayer], 
+						state.att[token], attOffset, position, token, h, headSize, kvDim, kvMul );
     			// System.out.printf("dot Att[%d]=%.6f%n", (attOffset + t), state.att[token].getFloat(attOffset + t));
     			// softmax the scores to get attention weights, from 0..position inclusively
-    			state.att[token].softmaxInPlace(attOffset, position + token + 1);
+    			//state.att[token].softmaxInPlace(attOffset, position + token + 1);
     			// weighted sum of the values, store back into xb
     			// float* xb = s.xb + h * headSize;
     			int xbOffset = h * headSize;
     			// memset(xb, 0, headSize * sizeof(float));
-    			state.xb[token].fillInPlace(xbOffset, headSize, 0f);
-    			// fillInPlace fills both GPU and local memory
-    			state.att[token].copyDeviceToHost("state.att[token]"); // bring Att down from softMaxKernel
-    			for (int t = 0; t <= position + token; t++) {
+    			//state.xb[token].fillInPlace(xbOffset, headSize, 0f);
+    			//state.att[token].copyDeviceToHost("state.att[token]"); // bring Att down from softMaxKernel
+    			//for (int t = 0; t <= position + token; t++) {
     				// get the value vector for this head and at this timestep
     				// float* v = s.value_cache + loff + t * dim + h * headSize;
-    				int vOffset = t * kvDim + (h / kvMul) * headSize;
+    				//int vOffset = t * kvDim + (h / kvMul) * headSize;
     				// get the attention weight for this timestep
-    				float a = state.att[token].getFloat(attOffset + t);
+    				//float a = state.att[token].getFloat(attOffset + t);
     				// accumulate the weighted value into xb
-    				state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
-    			}
-    			//weightedSum(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, token + position);
+    				//state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
+    			//}
+    			DeviceManager.weightedSum(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
   				state.xb[token].copyDeviceToHost("state.xb[token]"); // set up for downstream rmsnorm
     		});
     		timer.close();
@@ -2255,43 +2251,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     	return state.logits;
     }
     
-    
-    private static void weightedSum(FloatTensor att, FloatTensor xb, FloatTensor vCache, int h, int headSize, int attOffset, int xbOffset, int kvDim, int kvMul, int tokePos) {
-    	//launch_weighted_sum(uint8_t* Att, uint8_t* xb, const uint8_t* vCache, 
-    	//int h, int headSize, int attOffset, int xbOffset, int kvDim, int kvMul, int size)
-    	try {
-    		Llama3.launchAV.invokeExact(att.devicePtrOr0(), xb.devicePtrOr0(), vCache.devicePtrOr0(), 
-    				h, headSize, attOffset, xbOffset, kvDim, kvMul, tokePos);
-    	} catch (Throwable e) {
-    		throw new RuntimeException(e);
-    	}
-    }
-    
-    static void printParallelMatmul() {
-        /*System.out.println("Parallel matmul print start:");
-        Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
-            final int token = (int) (ht / config.numberOfHeads);
-            final int h     = (int) (ht % config.numberOfHeads);
-            // Offsets for this head
-            final int qOffset   = h * headSize;
-            final int attOffset = h * config.contextLength;
-            // Time horizon for this token (inclusive of current position)
-            final int T = position + token + 1;
-            System.out.println(Thread.currentThread().getName()+"| (T, token, h, qOffset, attOffset) T="+T+" token="+token+" h="+h+" qOffset="+qOffset+" attOffset="+attOffset);
-            for (int t = 0; t < T; t++) {
-                final int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
-                //System.out.println(Thread.currentThread().getName()+"|t loop (curLayer, keyCacheOffset, headSize) - float[] kVec = state.keyCache["+curLayer+"].exportSlicePooled(Llama3.poolHead,"+ keyCacheOffset+","+ headSize+")");
-            }
-            // 4) Weighted sum over values → xb
-            final int xbOffset = h * headSize;
-            for (int t = 0; t < T; t++) {
-                final int vOffset = t * kvDim + (h / kvMul) * headSize;
-                //System.out.println(Thread.currentThread().getName()+"|t loop (token, attOffset, t) float a = state.att["+token+"].getFloat("+(attOffset + t)+")");
-                //System.out.println(Thread.currentThread().getName()+"|t loop (token xbOffset, curLayer, vOffset, headSize) state.xb["+token+"].saxpyInPlace("+xbOffset+",state.valueCache["+curLayer+"],("+vOffset+","+ headSize+", a)");
-            }
-        });
-        System.out.println("Parallel matmul print end");*/		
-    }
+ 
     
     static FloatTensor forwardQwen(Llama model, State state, int token, int position) {
     	// a few convenience variables

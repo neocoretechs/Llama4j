@@ -4,21 +4,21 @@ import java.io.Externalizable;
 import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
+
 import java.lang.foreign.Arena;
-import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import java.lang.invoke.VarHandle;
-import java.lang.foreign.MemoryLayout.PathElement;
-import java.nio.ByteBuffer;
+
 import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
+
 import java.util.Arrays;
-import java.util.Objects;
 
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
-
+/**
+ * ArrayFloatTensor maintaining array of floats under CPU inference and backed by a MemorySegment under GPU inference.
+ * Controlled by FloatTensor.USE_CUDA flag.
+ */
 final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comparable {
 	public static boolean DEBUG = false;
     private float[] values;
@@ -120,19 +120,6 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 		long endBlock   = (elementOffset + elementCount - 1) / GGMLType.F32.getBlockSize();
 		long blocks     = (endBlock - startBlock + 1);
 		return blocks * GGMLType.F32.getTypeSize();
-	}
-	@Override
-	public void copyDeviceToHost() {
-		long bytes = totalBytes();
-		if (!isOnDevice())
-			throw new RuntimeException("Device is not initialized for DeviceToHost transfer: " + this);
-		MemorySegment hostSeg = getSegment();
-		try {
-			// Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
-			Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), hostSeg.address(), bytes);
-		} catch (Throwable e) {
-			throw new RuntimeException("DeviceToHost tansfer failed for " + this, e);
-		}
 	}
 
 	@Override

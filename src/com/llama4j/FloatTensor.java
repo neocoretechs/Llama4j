@@ -27,7 +27,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
     private long devicePtr; // 0 if not uploaded
-	private boolean VERIFY_GPU_DATA = true;
+    private boolean uploaded = false;
+	private boolean VERIFY_GPU_DATA = false;
     
     static short readShort(MemorySegment memorySegment, long offset) {
         return memorySegment.get(ValueLayout.JAVA_SHORT, offset);
@@ -109,10 +110,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	if(DEBUG)
     		System.out.printf("%s thread:%s thisOffset:%d thatOffset:%d size:%d%n", 
     				thiz.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size);
-    		float result = (float) Llama3.sdotSliceDeviceHandle.invokeExact(
-    				thiz.devicePtrOr0(), thisOffset, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
-    				that.devicePtrOr0(), thatOffset, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(),
-    				size);
+    		float result = DeviceManager.sdot(thiz, thisOffset,that, thatOffset, size);
     		if(DO_SDOT_COMPARE)
     			compareSdotTest(result, thiz, thisOffset, that, thatOffset, size);
       		return result;
@@ -136,12 +134,13 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	devicePtr = allocDevice(getSegment().byteSize());
     }   
     public void freeDevice() {
-    	if(isOnDevice()) {
+    	if(isAllocated()) {
     		DeviceMemoryLedger.release(getSegment().byteSize());
     		try {
 				Llama3.freeDevicePtr.invokeExact(devicePtr);
-			} catch (Throwable e) {
-			}
+			} catch (Throwable e) {}
+    		DeviceManager.reclaim(devicePtr);
+    		uploaded = false;
     		devicePtr = 0L;
     	}
     }  
@@ -165,62 +164,42 @@ public abstract class FloatTensor implements Externalizable, Comparable {
      * @param bytes the number of bytes in the segment
      * @param arena The Arena that allocated the MemorySegment
      * @return
-     */
+     
     static MemorySegment devSeg(long devicePtr, long bytes, Arena arena) {
     	if(devicePtr == 0L)
     		throw new RuntimeException("devicePtr is unallocated for devSeg call of "+bytes+" bytes using Arena "+arena);
     	MemorySegment base = MemorySegment.ofAddress(devicePtr);
     	return base.reinterpret(bytes, arena, null);
     }
+    */
+    
     public long devicePtrOr0() {
-        return isOnDevice() ? devicePtr : 0L;
+        return isAllocated() ? devicePtr : 0L;
     }
-    public boolean isOnDevice() {
+    public boolean isAllocated() {
         return devicePtr != 0L;
     }
-
-    public void copyHostToDevice() {
-        MemorySegment hostSeg = getSegment();
-        long bytes = totalBytes();
-        if (!isOnDevice())
-            throw new RuntimeException("Device is not initialized for HostToDevice transfer: " + this.getSegment());
-        try {
-            // Signature should be (hostSeg, devicePtr, bytes)
-            Llama3.copyHostToDeviceMH.invokeExact(hostSeg, devicePtr, bytes);
-        } catch (Throwable e) {
-            throw new RuntimeException("HostToDevice transfer failed for " + this.getSegment(), e);
-        }
+    public boolean isUploaded() {
+    	return uploaded;
     }
+ 
     public void copyHostToDevice(String id) {
         MemorySegment hostSeg = getSegment();
         long bytes = totalBytes();
-        if (!isOnDevice())
+        if (!isAllocated())
             throw new RuntimeException("Device "+id+" is not initialized for HostToDevice transfer: " + this.getSegment());
         try {
             // Signature should be (hostSeg, devicePtr, bytes)
             Llama3.copyHostToDeviceMH.invokeExact(hostSeg, devicePtr, bytes);
+            uploaded = true;
         } catch (Throwable e) {
             throw new RuntimeException("HostToDevice transfer failed for id:"+id+", "+this, e);
         }
     }
     
-    public void copyDeviceToHost() {
-        long bytes = totalBytes();
-        if (!isOnDevice())
-            throw new RuntimeException("Device is not initialized for DeviceToHost transfer: " + this.getSegment());
-        MemorySegment hostSeg = getSegment();
-        try {
-            // Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
-            //Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), FloatTensor.devSeg(devicePtrOr0(), bytes, getArena()), bytes);
-            Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), hostSeg.address(), bytes);
-        } catch (Throwable e) {
-            throw new RuntimeException("DeviceToHost transfer failed for " + this.getSegment(), e);
-        }
-    }
-    
     public void copyDeviceToHost(String id) {
         long bytes = totalBytes();
-        if (!isOnDevice())
+        if (!isAllocated())
             throw new RuntimeException("Device "+id+" is not initialized for DeviceToHost transfer: " + this.getSegment());
         MemorySegment hostSeg = getSegment();
         try {
@@ -253,14 +232,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         //	System.out.printf("%s bytes=%d seg=%s%n",id,bytes,hostSeg);
     }
     
-    //launch_rmsnorm_fp32_rowmajor(uint8_t* qA, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
-    //uint8_t* qB, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB,
-    //float* out, int size, float eps) 
-    static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) throws Throwable {
-        Llama3.launchRmsnorm.invokeExact(x.devicePtrOr0(), 0, x.getFormatType(), x.type().getBlockSize(), x.type().getTypeSize(), x.getHeadSize(),
-        		weight.devicePtrOr0(), 0, weight.getFormatType(), weight.type().getBlockSize(), weight.type().getTypeSize(), weight.getHeadSize(),
-        		out.devicePtrOr0(), size, eps);
-    }
+ 
     
     public static FloatTensor[] loadArrayOfF32Tensors(int size, IntFunction<GGMLTensorEntry> get) {
         FloatTensor[] array = new FloatTensor[size];
@@ -273,22 +245,21 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
-    	/*long nanos1 = System.nanoTime();
+    	long nanos1 = System.nanoTime();
     	if(FloatTensor.USE_CUDA) {
-      		System.out.println("GPU test STARTED for SINGLE: dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that len:"+that.size()+" out len:"+out.size());
+      		//System.out.println("GPU test STARTED for SINGLE: dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that len:"+that.size()+" out len:"+out.size());
     		try {
-				//Llama3.launchMatmul.invokeExact(this.devicePtrOr0(), 0, this.getFormatType(), this.type().getBlockSize(), this.type().getTypeSize(), this.getHeadSize(),
+				DeviceManager.matmul(this, that, out, dim0, dim1);
+		   		return;
+    			//for(int i = 0; i < dim0; i++)
+    	 		//out.setFloat(i, (float) Llama3.sdotSimple.invokeExact(this.devicePtrOr0(), i*dim1, this.getFormatType(), this.type().getBlockSize(), this.type().getTypeSize(), this.getHeadSize(),
 				//		that.devicePtrOr0(), 0, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(), 
-				//		out.devicePtrOr0(), dim0, dim1);
-		   		//return;
-    			for(int i = 0; i < dim0; i++)
-    	 		out.setFloat(i, (float) Llama3.sdotSimple.invokeExact(this.devicePtrOr0(), i*dim1, this.getFormatType(), this.type().getBlockSize(), this.type().getTypeSize(), this.getHeadSize(),
-						that.devicePtrOr0(), 0, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(), 
-						dim1));
+				//		dim1));
 			} catch (Throwable e) {
 				throw new RuntimeException(e);
 			}
     	}
+    	/*
     	out.copyDeviceToHost("comparison test");
     	nanos1 = System.nanoTime() - nanos1;
     	FloatTensor test = ArrayFloatTensor.allocate(dim0);
@@ -311,27 +282,25 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	if (that.length != out.length) {
     		throw new IllegalArgumentException(String.format("that.len=%d, out.len=%d", that.length, out.length));
     	}
-    	/*if(FloatTensor.USE_CUDA) {
-    		//Parallel.parallelFor(0, context, idxArr -> {
-    		System.out.println("GPU test STARTED for context:"+context+" dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that array len:"+that.length+" out array len:"+out.length);
-    		for(int ti=0 ; ti < dim0*context; ti++) {
+    	if(FloatTensor.USE_CUDA) {
+    		Parallel.parallelFor(0, context, idxArr -> {
+    		//System.out.println("GPU test STARTED for context:"+context+" dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that array len:"+that.length+" out array len:"+out.length);
+    		//for(int ti=0 ; ti < dim0*context; ti++) {
     			try {
-    				int idxArr = (int) (ti / dim0);
-    	    		int i = (int) (ti % dim0);
+    				//int idxArr = (int) (ti / dim0);
+    	    		//int i = (int) (ti % dim0);
     		  	 	//long nanos1 = System.nanoTime();
-    				//Llama3.launchMatmul.invokeExact(this.devicePtrOr0(), 0, this.getFormatType(), this.type().getBlockSize(), this.type().getTypeSize(), this.getHeadSize(),
-    				//		that[idxArr].devicePtrOr0(), 0, that[idxArr].getFormatType(), that[idxArr].type().getBlockSize(), that[idxArr].type().getTypeSize(), that[idxArr].getHeadSize(), 
-    				//		out[idxArr].devicePtrOr0(), dim0, dim1);
+    				DeviceManager.matmul(this, that[idxArr],out[idxArr], dim0, dim1);
     	        	//for(int ti = 0; ti < dim0; ti++) {
-    	        		out[idxArr].setFloat(i, (float) Llama3.sdotSimple.invokeExact(this.devicePtrOr0(), i*dim1, this.getFormatType(), this.type().getBlockSize(), this.type().getTypeSize(), this.getHeadSize(),
-    	        						that[idxArr].devicePtrOr0(), 0, that[idxArr].getFormatType(), that[idxArr].type().getBlockSize(), that[idxArr].type().getTypeSize(), that[idxArr].getHeadSize(), 
-    	        						dim1));
+    	        	//	out[idxArr].setFloat(i, (float) Llama3.sdotSimple.invokeExact(this.devicePtrOr0(), i*dim1, this.getFormatType(), this.type().getBlockSize(), this.type().getTypeSize(), this.getHeadSize(),
+    	        	//					that[idxArr].devicePtrOr0(), 0, that[idxArr].getFormatType(), that[idxArr].type().getBlockSize(), that[idxArr].type().getTypeSize(), that[idxArr].getHeadSize(), 
+    	        	//					dim1));
     	        	//}
     			} catch (Throwable e) {
     				throw new RuntimeException(e);
     			}
-    		}
- 	   		for(int i = 0; i < context; i++)
+    		//}
+ 	   		/*for(int i = 0; i < context; i++)
 	   			out[i].copyDeviceToHost("comparison test");
     		FloatTensor[] test = new FloatTensor[out.length];
     		for(int i = 0; i < out.length; i++)
@@ -361,10 +330,10 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	        System.out.println("GPU test finished for context:"+context+" dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that array len:"+that.length+" out array len:"+out.length);
     			//} catch (Throwable e) {
     			//	throw new RuntimeException(e);
-    			//}
-    		//});
+    			//}*/
+    		});
     		return;
-    	}*/
+    	}
     	Parallel.parallelForLong(0, dim0 * context, ti -> {
     		int idxArr = (int) (ti / dim0);
     		int i = (int) (ti % dim0);
@@ -466,9 +435,9 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     
     FloatTensor softmaxInPlace(int thisOffset, int size) {
     	if(USE_CUDA) {
-    		MemorySegment xDev = devSeg(devicePtrOr0(), (long) size * Float.BYTES, getArena());
+    		//MemorySegment xDev = devSeg(devicePtrOr0(), (long) size * Float.BYTES, getArena());
     		try {
-    			return (FloatTensor) Llama3.launchSoftmaxInplace.invokeExact(xDev, size, 1, thisOffset);
+    			return DeviceManager.softmax(this, thisOffset, size, 1);
     		} catch (Throwable e) {}
     	}
     	//try (Timer timer = Timer.log("CPU SoftMax:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {

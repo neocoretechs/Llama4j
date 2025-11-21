@@ -176,18 +176,18 @@ public final class NativeLoader {
 						)
 				);
 		System.out.println("launch_row_softmax_inplace_fp32:"+Llama3.launchSoftmaxInplace);
-		//launch_weighted_sum(uint8_t* Att, uint8_t* xb, const uint8_t* vCache, 
-		//int h, int headSize, int attOffset, int xbOffset, int kvDim, int kvMul, int size)
+		//void launch_weighted_sum(uint8_t* Att, uint8_t* xb, uint8_t* vCache, int h, int headSize, 
+		// int attOffset, int xbOffset, int vcOffset, int kvDim, int kvMul, int position, int token, int size) 
 		Llama3.launchAV = linker.downcallHandle(
 			    lookup.find("launch_weighted_sum").get(),
 			    FunctionDescriptor.ofVoid(
 			        ValueLayout.JAVA_LONG, // Att
 			        ValueLayout.JAVA_LONG, // xb
 			        ValueLayout.JAVA_LONG, // vCache
-			        //int h, int headSize, int attOffset, int xbOffset, int kvDim, int kvMul
-			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, 
-			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-			        ValueLayout.JAVA_INT
+			        //int h, int headSize, int attOffset, int xbOffset,  
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, //int kvDim, int kvMul
+			        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT //int position, int token
 			    )
 			);
 		System.out.println("launch_weighted_sum:"+Llama3.launchAV);
@@ -230,6 +230,34 @@ public final class NativeLoader {
 						ValueLayout.JAVA_INT	  // Number of elements in tensor
 						));
 		System.out.println("launch_cpu_scalar_Dot:"+Llama3.sdotSimple);
+		//void launch_qkscores(uint8_t* q, int qOffset, int formatA, int blockSizeA, int typeSizeA, int headerBlockA,
+	    //uint8_t* keyCache, int keyCacheOffset, int formatB, int blockSizeB, int typeSizeB, int headerBlockB, 
+	    //uint8_t* Att, int attOffset, 
+	    //int position, int token, int h, int headSize, int kvDim, int kvMul )
+		Llama3.launchQK = linker.downcallHandle(
+				lookup.find("launch_qkscores").get(),
+				FunctionDescriptor.ofVoid(
+						ValueLayout.JAVA_LONG,    // q
+						ValueLayout.JAVA_INT ,    // offset q
+						ValueLayout.JAVA_INT,     // format q (1-5 = Q8,Q4,F16,BF16,F32)
+						ValueLayout.JAVA_INT,     // blockSize q for format
+						ValueLayout.JAVA_INT,     // typeSize q for format
+						ValueLayout.JAVA_INT,     // headerBytes q for format
+						ValueLayout.JAVA_LONG,    // keyCache (keyCacheOffset computed in device kernel)
+						ValueLayout.JAVA_INT,     // format 
+						ValueLayout.JAVA_INT,     // blocksize 
+						ValueLayout.JAVA_INT,     // typeSize 
+						ValueLayout.JAVA_INT,     // headerBytes keyCache
+						ValueLayout.JAVA_LONG,    // Att
+						ValueLayout.JAVA_INT,     // attOffset 
+						ValueLayout.JAVA_INT,	  // position
+						ValueLayout.JAVA_INT,     // token 
+						ValueLayout.JAVA_INT,     // h
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // kvDim
+						ValueLayout.JAVA_INT	  // kvMul
+						));
+		System.out.println("launch_qkscores:"+Llama3.launchQK);
 	    Llama3.allocDevicePtr = linker.downcallHandle(
 		        lookup.find("allocDevicePtr").get(),
 		        FunctionDescriptor.of(ValueLayout.JAVA_LONG, // uint64_t device ptr

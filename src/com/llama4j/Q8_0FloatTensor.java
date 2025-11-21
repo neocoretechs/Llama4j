@@ -161,7 +161,6 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     private static float vectorDot(Q8_0FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {
         float result = 0f;
         int j = 0;
-
         // Align thisOffset + startIndex to type().getBlockSize().
         assert Integer.bitCount(GGMLType.Q8_0.getBlockSize()) == 1 : "power of 2";
         int alignmentBound = Math.min(size, -thisOffset & (GGMLType.Q8_0.getBlockSize() - 1));
@@ -170,7 +169,6 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
             j += alignmentBound;
         }
         assert (thisOffset + j) % GGMLType.Q8_0.getBlockSize() == 0;
-
         FloatVector val = FloatVector.zero(F_SPECIES);
         int blockOffset = (thisOffset + j) / GGMLType.Q8_0.getBlockSize() * GGMLType.Q8_0.getTypeSize();
         int upperBound = size / GGMLType.Q8_0.getBlockSize() * GGMLType.Q8_0.getBlockSize();
@@ -207,12 +205,10 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
             }
         }
         result += val.reduceLanes(VectorOperators.ADD);
-
         // Remaining entries.
         if (j < size) {
             result += FloatTensor.scalarDot(thiz, thisOffset + j, that, thatOffset + j, size - j);
         }
-
         return result;
     }
     
