@@ -2009,7 +2009,6 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     	int headSize = config.headSize;
     	int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
     	int kvMul = config.numberOfHeads / config.numberOfKeyValueHeads; // integer multiplier of the kv sharing in multiquery
-    	float sqrtHeadSize = (float) Math.sqrt(headSize);
     	final int nTokens = tokens.length;
     	// copy the token embedding into x
     	Parallel.parallelFor(0, nTokens, t ->

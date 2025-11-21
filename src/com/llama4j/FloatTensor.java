@@ -132,7 +132,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     public void allocDevice() {
     	devicePtr = allocDevice(getSegment().byteSize());
-    }   
+    }
+    
     public void freeDevice() {
     	if(isAllocated()) {
     		DeviceMemoryLedger.release(getSegment().byteSize());
@@ -143,8 +144,9 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		uploaded = false;
     		devicePtr = 0L;
     	}
-    }  
-    public static long allocDevice(long bytes) {
+    }
+    
+    private static long allocDevice(long bytes) {
     	if(DeviceMemoryLedger.tryReserve(bytes)) {
     		try {
 				return (long) Llama3.allocDevicePtr.invokeExact(bytes);

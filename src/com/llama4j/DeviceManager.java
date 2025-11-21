@@ -14,9 +14,11 @@ public final class DeviceManager {
 		}
 	}
 	private static ConcurrentHashMap<Long, DeviceStatus> deviceMap = new ConcurrentHashMap<>();
+	
 	public static synchronized void offer(FloatTensor t, String id, boolean reupload) {
 		if(t.devicePtrOr0() == 0L) {
-			deviceMap.put(FloatTensor.allocDevice(t.totalBytes()), new DeviceStatus(TensorState.ON_HOST));
+			t.allocDevice();
+			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST));
 		}
 		DeviceStatus status = deviceMap.get(t.devicePtrOr0());
 		if(status == null) { // allocated outside device manager, deal with it
