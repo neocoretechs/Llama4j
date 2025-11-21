@@ -81,6 +81,10 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 		return size() * (long) Float.BYTES; 
 	}
 	@Override
+	public boolean isImmutable() {
+		return false;
+	}   
+	@Override
 	public FloatTensor fillInPlace(int thisOffset, int size, float value) {
 		if(FloatTensor.USE_CUDA) {
 			for(int index = thisOffset; index < thisOffset+size; index++)

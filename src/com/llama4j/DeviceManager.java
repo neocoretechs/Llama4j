@@ -1,5 +1,6 @@
 package com.llama4j;
 
+import java.util.Iterator;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class DeviceManager {
@@ -9,20 +10,30 @@ public final class DeviceManager {
 	}
 	static class DeviceStatus {
 		TensorState state;
-		DeviceStatus(TensorState state) {
+		String id;
+		long uploads = 0L;
+		long downloads = 0L;
+		long uploadBytes = 0L;
+		long downloadBytes = 0L;
+		DeviceStatus(TensorState state, String id) {
 			this.state = state;
+			this.id = id;
+		}
+		public String toString() {
+			return String.format("Tensor %s uploads=%d downloads=%d upload bytes = %d download bytes = %d", id, uploads, downloads, uploadBytes, downloadBytes);
 		}
 	}
+	
 	private static ConcurrentHashMap<Long, DeviceStatus> deviceMap = new ConcurrentHashMap<>();
 	
 	public static synchronized void offer(FloatTensor t, String id, boolean reupload) {
 		if(t.devicePtrOr0() == 0L) {
 			t.allocDevice();
-			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST));
+			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST, id));
 		}
 		DeviceStatus status = deviceMap.get(t.devicePtrOr0());
 		if(status == null) { // allocated outside device manager, deal with it
-			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST));
+			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST, id));
 			System.out.println("WARNING - Tensor "+id+" allocated outside device manager.");
 		} else {
 			if(status.state != TensorState.ON_DEVICE) {
@@ -30,10 +41,14 @@ public final class DeviceManager {
 					System.out.println("WARNING - Tensor "+id+" uploaded outside device manager.");
 				t.copyHostToDevice(id);
 				status.state = TensorState.ON_DEVICE;
-				deviceMap.put(t.devicePtrOr0(), status);
+				status.uploadBytes += t.totalBytes();
+				++status.uploads;
 			} else {
-				if(reupload)
+				if(reupload) {
 					t.copyHostToDevice(id);
+					status.uploadBytes += t.totalBytes();
+					++status.uploads;
+				}
 			}
 		}
 	}
@@ -50,23 +65,70 @@ public final class DeviceManager {
 	 * @param t
 	 */
 	public static synchronized void reclaim(FloatTensor t, String id) {
+		if(t.isImmutable()) {
+			throw new RuntimeException("Attempt to reclaim immutable tensor "+id);
+		}
 		if(t.devicePtrOr0() == 0L) {
 			throw new RuntimeException("Tensor "+id+" was already freed. Cannot download from device.");
 		}
 		DeviceStatus status = deviceMap.get(t.devicePtrOr0());
 		if(status == null) { // allocated outside device manager, deal with it
-			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST));
+			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST, id));
 			System.out.println("WARNING - Tensor "+id+" was previously unknown to device manager.");
 		} else {
 			if(status.state != TensorState.ON_DEVICE) { // not on device for device manager, but uploaded to tensor?
 				if(t.isUploaded()) {
+					status.state = TensorState.ON_DEVICE;
 					System.out.println("WARNING - Tensor "+id+" uploaded outside device manager.");
 					t.copyDeviceToHost(id);
+					status.downloadBytes += t.totalBytes();
+					++status.downloads;
+				}
+			} else { // its on device, download
+				t.copyDeviceToHost(id);
+				status.downloadBytes += t.totalBytes();
+				++status.downloads;
+			}
+		}
+	}
+	
+	public static synchronized void reclaimTest(FloatTensor t, String id) {
+		if(t.isImmutable())
+			return;
+		if(t.devicePtrOr0() == 0L) {
+			//throw new RuntimeException("Tensor "+id+" was already freed. Cannot download from device.");
+			return;
+		}
+		DeviceStatus status = deviceMap.get(t.devicePtrOr0());
+		if(status == null) { // allocated outside device manager, deal with it
+			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST, id));
+			//System.out.println("WARNING - Tensor "+id+" was previously unknown to device manager.");
+		} else {
+			if(status.state != TensorState.ON_DEVICE) { // not on device for device manager, but uploaded to tensor?
+				if(t.isUploaded()) {
+					//System.out.println("WARNING - Tensor "+id+" uploaded outside device manager.");
+					status.state = TensorState.ON_DEVICE;
+					t.copyDeviceToHost(id);
+					status.downloadBytes += t.totalBytes();
+					++status.downloads;
 				}
 			} else { // device, download
 				t.copyDeviceToHost(id);
+				status.downloadBytes += t.totalBytes();
+				++status.downloads;
 			}
 		}
+	}
+	public static void report() {
+	    for (DeviceStatus ds : deviceMap.values()) {
+	        System.out.println(ds);
+	    }
+	}
+	public static void reset() {
+	    for (DeviceStatus ds : deviceMap.values()) {
+	        ds.uploads = ds.downloads = 0L;
+	        ds.uploadBytes = ds.downloadBytes = 0L;
+	    }
 	}
 	
 	static FloatTensor softmax(FloatTensor thiz, int thisOffset, int size, int columns) {
@@ -92,6 +154,23 @@ public final class DeviceManager {
 		} catch (Throwable e) {
 			throw new RuntimeException(e);
 		}
+    }
+    
+    static void rmsnormCpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) {
+    	// calculate sum of squares
+     	reclaimTest(x, "rmsnorm x");
+    	reclaimTest(weight, "rmsnorm weight");
+    	reclaimTest(out, "rmsnorm out");
+    	float ss = x.reduce(0, size, 0f, (acc, xi) -> acc + xi * xi);
+    	ss /= size;
+    	ss += eps;
+    	ss = (float) (1.0 / Math.sqrt(ss));
+    	// normalize and scale
+    	final float finalss = ss; // for the lambda
+    	out.mapWithIndexInPlace(0, size, (value, index) -> weight.getFloat(index) * (finalss * x.getFloat(index)));
+      	offer(x, "rmsnorm x", true); // re-upload
+    	offer(weight, "rmsnorm weight", true);
+    	offer(out, "rmsnorm out", true);
     }
     
     static void weightedSum(FloatTensor att, FloatTensor xb, FloatTensor vCache, int h, int headSize, int attOffset, int xbOffset, int kvDim, int kvMul, int position, int token) {

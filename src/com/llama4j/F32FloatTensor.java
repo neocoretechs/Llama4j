@@ -80,7 +80,10 @@ final class F32FloatTensor extends FloatTensor implements Externalizable, Compar
 		long blocks     = (endBlock - startBlock + 1);
 		return blocks * GGMLType.F32.getTypeSize();
 	}
-	
+	@Override
+	public boolean isImmutable() {
+		return true;
+	}
     @Override
     public Arena getArena() {
     	return Llama3.autoArena;

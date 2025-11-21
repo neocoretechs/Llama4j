@@ -92,6 +92,11 @@ final class Q8_0FloatTensor extends FloatTensor implements Externalizable, Compa
     public static final ValueLayout.OfShort JAVA_SHORT_LE = ValueLayout.JAVA_SHORT.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     @Override
+    public boolean isImmutable() {
+    	return true;
+    }
+    
+    @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {
     		try {

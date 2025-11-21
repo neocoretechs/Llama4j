@@ -111,7 +111,12 @@ final class Q4_0FloatTensor extends FloatTensor implements Externalizable, Compa
         quant -= 8;
         return quant * scale;
     }
-
+    
+    @Override
+    public boolean isImmutable() {
+    	return true;
+    }
+    
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
        	if(FloatTensor.USE_CUDA) {

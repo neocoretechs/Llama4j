@@ -92,7 +92,10 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 	public MemorySegment getSegment() {
 		return memorySegment;
 	}
-
+	@Override
+	public boolean isImmutable() {
+		return true;
+	}
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {

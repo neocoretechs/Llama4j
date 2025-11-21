@@ -99,7 +99,10 @@ final class BF16FloatTensor extends FloatTensor implements Externalizable, Compa
     private float bfloat16ToFloat(short bfloat16) {
         return Float.intBitsToFloat(bfloat16 << 16);
     }
-    
+    @Override
+    public boolean isImmutable() {
+    	return true;
+    }
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(FloatTensor.USE_CUDA) {

@@ -64,7 +64,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
             S_SPECIES_HALF = null;
         }
     }
-
+    public abstract boolean isImmutable();
     public abstract int size();
     public abstract float getFloat(int index);
     public abstract void setFloat(int index, float value);
