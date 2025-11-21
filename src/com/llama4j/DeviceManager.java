@@ -14,7 +14,7 @@ public final class DeviceManager {
 		}
 	}
 	private static ConcurrentHashMap<Long, DeviceStatus> deviceMap = new ConcurrentHashMap<>();
-	public static void offer(FloatTensor t, String id, boolean reupload) {
+	public static synchronized void offer(FloatTensor t, String id, boolean reupload) {
 		if(t.devicePtrOr0() == 0L) {
 			deviceMap.put(FloatTensor.allocDevice(t.totalBytes()), new DeviceStatus(TensorState.ON_HOST));
 		}
@@ -47,7 +47,7 @@ public final class DeviceManager {
 	 * Copy data from device to tensor
 	 * @param t
 	 */
-	public static void reclaim(FloatTensor t, String id) {
+	public static synchronized void reclaim(FloatTensor t, String id) {
 		if(t.devicePtrOr0() == 0L) {
 			throw new RuntimeException("Tensor "+id+" was already freed. Cannot download from device.");
 		}
@@ -69,6 +69,7 @@ public final class DeviceManager {
 	
 	static FloatTensor softmax(FloatTensor thiz, int thisOffset, int size, int columns) {
 		try {
+			offer(thiz, "softmax", false);
 			return (FloatTensor) Llama3.launchSoftmaxInplace.invokeExact(thiz.devicePtrOr0(), size, columns, thisOffset);
 		} catch (Throwable e) {
 			throw new RuntimeException(e);
@@ -80,6 +81,9 @@ public final class DeviceManager {
     //float* out, int size, float eps) 
     static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) {
         try {
+        	offer(x, "rmsnorm x", false);
+        	offer(weight, "rmsnorm weight", false);
+        	offer(out, "rmsnorm out", false);
 			Llama3.launchRmsnorm.invokeExact(x.devicePtrOr0(), 0, x.getFormatType(), x.type().getBlockSize(), x.type().getTypeSize(), x.getHeadSize(),
 					weight.devicePtrOr0(), 0, weight.getFormatType(), weight.type().getBlockSize(), weight.type().getTypeSize(), weight.getHeadSize(),
 					out.devicePtrOr0(), size, eps);
@@ -92,6 +96,9 @@ public final class DeviceManager {
     	//void launch_weighted_sum(uint8_t* Att, uint8_t* xb, uint8_t* vCache, int h, int headSize, 
 		// int attOffset, int xbOffset, int vcOffset, int kvDim, int kvMul, int position, int token, int size) 
     	try {
+    		offer(att, "weightedSum att", false);
+    		offer(xb, "weightedSum xb", false);
+    		offer(vCache, "weightedSum vCache", false);
     		Llama3.launchAV.invokeExact(att.devicePtrOr0(), xb.devicePtrOr0(), vCache.devicePtrOr0(), 
     				h, headSize, attOffset, xbOffset, kvDim, kvMul, position, token);
     	} catch (Throwable e) {
@@ -102,6 +109,9 @@ public final class DeviceManager {
     static void qkScores(FloatTensor q, int qOffset, FloatTensor keyCache,  
 	    FloatTensor Att, int attOffset, int position, int token, int h, int headSize, int kvDim, int kvMul ) {
     	try {
+    		offer(q, "qkScore q", false);
+    		offer(keyCache, "qkScore keyCache", false);
+    		offer(Att, "qkScore Att", false);
 			Llama3.launchQK.invokeExact(q.devicePtrOr0(), qOffset, q.getFormatType(), q.type().getBlockSize(), q.type().getTypeSize(), q.getHeadSize(),
 					keyCache.devicePtrOr0(), keyCache.getFormatType(), keyCache.type().getBlockSize(), keyCache.type().getTypeSize(), keyCache.getHeadSize(),
 					Att.devicePtrOr0(), attOffset, position, token, h, headSize, kvDim, kvMul);
@@ -113,6 +123,8 @@ public final class DeviceManager {
     static float sdot(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) {
     	float result = 0.0f;
 		try {
+			offer(thiz, "sdot thiz", false);
+			offer(that, "sdot that", false);
 			result = (float) Llama3.sdotSliceDeviceHandle.invokeExact(
 					thiz.devicePtrOr0(), thisOffset, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
 					that.devicePtrOr0(), thatOffset, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(),
@@ -125,6 +137,9 @@ public final class DeviceManager {
     
     static void matmul(FloatTensor thiz, FloatTensor that, FloatTensor out, int dim0, int dim1) {
 		try {
+			offer(thiz, "matmul this", false);
+			offer(that, "matmul that", false);
+			offer(out, "matmul out", false);
 			Llama3.launchMatmul.invokeExact(thiz.devicePtrOr0(), 0, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
 					that.devicePtrOr0(), 0, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(), 
 					out.devicePtrOr0(), dim0, dim1);
