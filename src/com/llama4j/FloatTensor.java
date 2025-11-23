@@ -26,25 +26,25 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 	public static final boolean DO_SDOT_COMPARE = false;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
+	private boolean VERIFY_GPU_DATA = false;
+	
     private long devicePtr; // 0 if not uploaded
     private boolean uploaded = false;
-	private boolean VERIFY_GPU_DATA = false;
+	public static int dontMatch = 0;
+	public static int totalSdot = 0;
+	//public static Object mutex = new Object();
     
     static short readShort(MemorySegment memorySegment, long offset) {
         return memorySegment.get(ValueLayout.JAVA_SHORT, offset);
-        //return UNSAFE.getShort(memorySegment.address() + offset);
     }  
     static int readInt(MemorySegment memorySegment, long offset) {
         return memorySegment.get(ValueLayout.JAVA_INT, offset);
-        //return UNSAFE.getShort(memorySegment.address() + offset);
     }
     static float readFloat(MemorySegment memorySegment, long offset) {
         return memorySegment.get(ValueLayout.JAVA_FLOAT, offset);
-        //return UNSAFE.getShort(memorySegment.address() + offset);
     }  
     static byte readByte(MemorySegment memorySegment, long offset) {
         return memorySegment.get(ValueLayout.JAVA_BYTE, offset);
-        //return UNSAFE.getByte(memorySegment.address() + offset);
     }
     // Preferred vector size for the fast multiplication routines.
     // (Apple Silicon) NEON only supports up-to 128bit vectors.
@@ -70,7 +70,6 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     public abstract void setFloat(int index, float value);
     abstract FloatVector getFloatVector(VectorSpecies<Float> species, int offset);
     public abstract Arena getArena();
-    public abstract MemorySegment asSlice(long offSet1, long offSet2);
     public abstract MemorySegment getSegment();
     public abstract long getOffsetBytes(long offset);
     public abstract long getLengthBytes(long size, long offset);
@@ -86,34 +85,37 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     public static float scalarDot(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) {
         float result = 0f;
+        //if(USE_CUDA)
+        	//return cudaDot(thiz, thisOffset, that, thatOffset, size);
         for (int j = 0; j < size; j++) {
             result += thiz.getFloat(thisOffset + j) * that.getFloat(thatOffset + j);
             //System.out.printf("CPU %d) dot1 = %.6f dot2 = %.6f result = %.6f %n", j, thiz.getFloat(thisOffset + j) , that.getFloat(thatOffset + j), result);
         }
         return result;
     }
+    
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-      	if(USE_CUDA) {
-      		try {
-				return cudaSdotSliceDevice(this, thisOffset, that, thatOffset, size);
-			} catch (Throwable e) {
-				throw new RuntimeException(e);
-			}
-      	}
 		return scalarDot(this, thisOffset, that, thatOffset, size);
     }
     
-    public static int dontMatch = 0;
-    public static int totalSdot = 0;
-    //public static Object mutex = new Object();
-    public static float cudaSdotSliceDevice(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) throws Throwable {
+    public static float cudaDot(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(DEBUG)
     		System.out.printf("%s thread:%s thisOffset:%d thatOffset:%d size:%d%n", 
     				thiz.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size);
-    		float result = DeviceManager.sdot(thiz, thisOffset,that, thatOffset, size);
-    		if(DO_SDOT_COMPARE)
+    	float result = 0.0f;
+    	/*try {
+    	if(Llama3.CPU_BYPASS_TEST)
+    		result = DeviceManager.sdotCpu(thiz, thisOffset,that, thatOffset, size);
+    	else {
+    		result = DeviceManager.sdot(thiz, thisOffset,that, thatOffset, size);
+    	}
+    	if(DO_SDOT_COMPARE)
     			compareSdotTest(result, thiz, thisOffset, that, thatOffset, size);
-      		return result;
+    	} catch(Throwable e) {
+    		throw new RuntimeException(e);
+    	}*/
+    	result = scalarDot(thiz, thisOffset, that, thatOffset, size);
+      	return result;
     }
     /**
      * Compare the result of GPU sdot and CPU sdot to test numeric drift. Since sdot is the backbone of all our
@@ -157,23 +159,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	}
     	DeviceMemoryLedger.onAllocationFailure();
 		throw new RuntimeException("Failed to reserve "+bytes+" on device!");
-    } 
-    /**
-     * every time you need to pass a device buffer into a downcall, 
-     * call devSeg(ptr, size, arena) and get a properly bounded MemorySegment. 
-     * avoids repeating FFI Address/reinterpret 
-     * @param devicePtr The GPU device pointer from cudaMalloc
-     * @param bytes the number of bytes in the segment
-     * @param arena The Arena that allocated the MemorySegment
-     * @return
-     
-    static MemorySegment devSeg(long devicePtr, long bytes, Arena arena) {
-    	if(devicePtr == 0L)
-    		throw new RuntimeException("devicePtr is unallocated for devSeg call of "+bytes+" bytes using Arena "+arena);
-    	MemorySegment base = MemorySegment.ofAddress(devicePtr);
-    	return base.reinterpret(bytes, arena, null);
     }
-    */
     
     public long devicePtrOr0() {
         return isAllocated() ? devicePtr : 0L;
@@ -205,8 +191,6 @@ public abstract class FloatTensor implements Externalizable, Comparable {
             throw new RuntimeException("Device "+id+" is not initialized for DeviceToHost transfer: " + this.getSegment());
         MemorySegment hostSeg = getSegment();
         try {
-            // Signature should be (devicePtr, hostSeg, bytes) or (devView, hostSeg, bytes)—match native.
-            //Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), FloatTensor.devSeg(devicePtrOr0(), bytes, getArena()), bytes);
             Llama3.copyDeviceToHostMH.invokeExact(devicePtrOr0(), hostSeg.address(), bytes);
         } catch (Throwable e) {
             throw new RuntimeException("DeviceToHost transfer failed for id:"+id+", "+ this.getSegment(), e);
@@ -234,8 +218,6 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         //	System.out.printf("%s bytes=%d seg=%s%n",id,bytes,hostSeg);
     }
     
- 
-    
     public static FloatTensor[] loadArrayOfF32Tensors(int size, IntFunction<GGMLTensorEntry> get) {
         FloatTensor[] array = new FloatTensor[size];
         for (int i = 0; i < size; i++) {
@@ -247,19 +229,19 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
-    	long nanos1 = System.nanoTime();
+    	//long nanos1 = System.nanoTime();
     	if(FloatTensor.USE_CUDA) {
       		//System.out.println("GPU test STARTED for SINGLE: dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that len:"+that.size()+" out len:"+out.size());
-    		try {
-				DeviceManager.matmul(this, that, out, dim0, dim1);
-		   		return;
-    			//for(int i = 0; i < dim0; i++)
-    	 		//out.setFloat(i, (float) Llama3.sdotSimple.invokeExact(this.devicePtrOr0(), i*dim1, this.getFormatType(), this.type().getBlockSize(), this.type().getTypeSize(), this.getHeadSize(),
-				//		that.devicePtrOr0(), 0, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(), 
-				//		dim1));
-			} catch (Throwable e) {
-				throw new RuntimeException(e);
-			}
+    		//try {
+    			//if(Llama3.CPU_BYPASS_TEST)
+    				//DeviceManager.matmulCpu(this, that, out, dim0, dim1);
+    			//else {
+    				//DeviceManager.matmul(this, that, out, dim0, dim1);
+    			//}
+		   		//return;
+			//} catch (Throwable e) {
+			//	throw new RuntimeException(e);
+			//}
     	}
     	/*
     	out.copyDeviceToHost("comparison test");
@@ -285,22 +267,23 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		throw new IllegalArgumentException(String.format("that.len=%d, out.len=%d", that.length, out.length));
     	}
     	if(FloatTensor.USE_CUDA) {
-    		Parallel.parallelFor(0, context, idxArr -> {
+    		//Parallel.parallelFor(0, context, idxArr -> {
     		//System.out.println("GPU test STARTED for context:"+context+" dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that array len:"+that.length+" out array len:"+out.length);
     		//for(int ti=0 ; ti < dim0*context; ti++) {
-    			try {
-    				//int idxArr = (int) (ti / dim0);
-    	    		//int i = (int) (ti % dim0);
+    			//try {
     		  	 	//long nanos1 = System.nanoTime();
-    				DeviceManager.matmul(this, that[idxArr],out[idxArr], dim0, dim1);
-    	        	//for(int ti = 0; ti < dim0; ti++) {
-    	        	//	out[idxArr].setFloat(i, (float) Llama3.sdotSimple.invokeExact(this.devicePtrOr0(), i*dim1, this.getFormatType(), this.type().getBlockSize(), this.type().getTypeSize(), this.getHeadSize(),
-    	        	//					that[idxArr].devicePtrOr0(), 0, that[idxArr].getFormatType(), that[idxArr].type().getBlockSize(), that[idxArr].type().getTypeSize(), that[idxArr].getHeadSize(), 
-    	        	//					dim1));
-    	        	//}
-    			} catch (Throwable e) {
-    				throw new RuntimeException(e);
-    			}
+    				//if(Llama3.CPU_BYPASS_TEST)
+    					//DeviceManager.matmulCpu(this, that[idxArr], out[idxArr], dim0, dim1);
+    				//else
+    					//DeviceManager.matmul(this, that[idxArr], out[idxArr], dim0, dim1);
+    			 	//Parallel.parallelForLong(0, dim0 * context, ti -> {
+    		    	//	int idxArr = (int) (ti / dim0);
+    		    	//	int i = (int) (ti % dim0);
+    				//  out[idxArr].setFloat(i, DeviceManager.sdot(this, i * dim1, that[idxArr], 0, dim1)); 
+    	        	//});
+    			//} catch (Throwable e) {
+    			//	throw new RuntimeException(e);
+    			//}
     		//}
  	   		/*for(int i = 0; i < context; i++)
 	   			out[i].copyDeviceToHost("comparison test");
@@ -333,8 +316,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     			//} catch (Throwable e) {
     			//	throw new RuntimeException(e);
     			//}*/
-    		});
-    		return;
+    		//});
+    		//return;
     	}
     	Parallel.parallelForLong(0, dim0 * context, ti -> {
     		int idxArr = (int) (ti / dim0);
@@ -436,12 +419,17 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     FloatTensor softmaxInPlace(int thisOffset, int size) {
-    	if(USE_CUDA) {
-    		//MemorySegment xDev = devSeg(devicePtrOr0(), (long) size * Float.BYTES, getArena());
-    		try {
-    			return DeviceManager.softmax(this, thisOffset, size, 1);
-    		} catch (Throwable e) {}
-    	}
+    	//if(USE_CUDA) {
+    	//	try {
+    	//		if(Llama3.CPU_BYPASS_TEST)
+    	//			return DeviceManager.softmaxCpu(this, thisOffset, size, 1);
+    	//		else {
+    	//			return DeviceManager.softmax(this, thisOffset, size, 1);
+    	//		}
+    	//	} catch (Throwable e) {
+    	//		throw new RuntimeException(e);
+    	//	}
+    	//}
     	//try (Timer timer = Timer.log("CPU SoftMax:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
     	// find max value (for numerical stability)
     	float maxVal = max(thisOffset, size);
@@ -491,45 +479,4 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	return sb.toString();
     }
 
-	
-	/*public float cuBLASdotDevice(long cublasHandle, int thisOffset, FloatTensor that, int thatOffset, int size) {
-		// Preallocated device-side scalar for the result
-		ResultScalarPool.Scalar s = ResultScalarPool.acquire();
-		long dX = this.devicePtr() + (long)thisOffset * Float.BYTES;
-		long dY = that.devicePtr() + (long)thatOffset * Float.BYTES;
-		int rc = Gemm.sdotDevice(cublasHandle, size, dX, 1, dY, 1, s.dPtr);
-		if (rc != 0) 
-			throw new RuntimeException("sdotDevice rc=" + rc);
-		// Copy back one float
-		s.download(); // copies device->host for the one float
-		float out = s.get();
-		ResultScalarPool.release(s);
-		return out;
-	}*/
-	
-	public MemorySegment sliceElements(long elementOffset, long elementCount) {
-		long off = getOffsetBytes(elementOffset);
-		long len = getLengthBytes(elementCount, elementOffset);
-		MemorySegment seg = getSegment();
-		if (off + len > seg.byteSize()) {
-			throw new IllegalArgumentException(
-					"Slice out of bounds: off=" + off + " len=" + len + " segSize=" + seg.byteSize());
-		}
-		return seg.asSlice(off, len);
-	}
-
-    // Returns a lightweight read-only view (no allocation if possible).
-    public abstract FloatSliceView sliceView(int offset, int length);
-    // Export the slice as contiguous floats into a provided buffer (pooled).
-    // Returns the same dst for chaining.
-    public abstract float[] exportSlice(float[] dst, int dstOffset, int offset, int length);
-    // Convenience: allocate from a pool and export
-    public float[] exportSlicePooled(BufferPool pool, int offset, int length) {
-    	float[] dst = pool.acquire(length);
-    	if(DEBUG)
-    		System.out.println(this.getClass().getName()+".exportSlicePooled dst="+(dst == null ? "pool acquire dst length="+length+" FAIL, null!": dst.length));
-    	exportSlice(dst, 0, offset, length);
-    	return dst;
-    }
-    
 }

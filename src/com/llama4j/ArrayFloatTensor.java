@@ -101,8 +101,8 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 			throw new UnsupportedOperationException();
 		}
 		if(FloatTensor.USE_CUDA)
-			return FloatVector.fromMemorySegment(species, memorySegment, index, ByteOrder.nativeOrder());
-	    return FloatVector.fromArray(species, values, index);
+			return FloatVector.fromMemorySegment(species, memorySegment, (long) index * Float.BYTES, ByteOrder.nativeOrder());
+		return FloatVector.fromArray(species, values, index);
 	}
 	@Override
 	public Arena getArena() {
@@ -155,49 +155,7 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 		return Arrays.compare(values,((ArrayFloatTensor)o).values);
 	}
 	
-	@Override
-	public FloatSliceView sliceView(int offset, int length) {
-		// Zero-copy if you store (data, baseOffset, length) in the view
-		return new ArrayFloatSliceView(getSegment(), offset, length);
-	}
 	
-	@Override
-	public float[] exportSlice(float[] dst, int dstOffset, int offset, int length) {
-		if(FloatTensor.USE_CUDA) {
-			if(DEBUG)
-				System.out.println(this.getClass().getName()+".exportSlice dst="+(dst == null ? " arrayCopy dst length="+length+" FAIL, null!": dst.length));
-			System.arraycopy(getSegment().toArray(ValueLayout.JAVA_FLOAT), offset, dst, dstOffset, length);
-			return dst;
-		}
-		System.arraycopy(values, offset, dst, dstOffset, length);
-		return dst;
-	}
-
-	final class ArrayFloatSliceView implements FloatSliceView {
-		final float[] data; 
-		final int base; 
-		final int len;
-		ArrayFloatSliceView(float[] data, int base, int len) { 
-			this.data=data; 
-			this.base=base; 
-			this.len=len;
-		}
-		ArrayFloatSliceView(MemorySegment data, int base, int len) { 
-			this.data=data.toArray(ValueLayout.JAVA_FLOAT); 
-			this.base=base; 
-			this.len=len;
-		}
-		public int length() { return len; }
-		public float get(int i) { return data[base + i]; }
-	}
-
-	@Override
-	public MemorySegment asSlice(long elementOffset, long elementCount) {
-		long offBytes = elementOffset * Float.BYTES;
-		long lenBytes = elementCount * Float.BYTES;
-		return memorySegment.asSlice(offBytes, lenBytes);
-	}
-
 	@Override
 	public String toString() {
     	if(FloatTensor.USE_CUDA)

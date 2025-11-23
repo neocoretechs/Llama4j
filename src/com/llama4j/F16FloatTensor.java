@@ -22,13 +22,11 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
     transient MemorySegment memorySegment;
 
     public F16FloatTensor() {
-	    //this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F16.getBlockSize(), GGMLType.F16.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F16.ordinal());
     }
     
     public F16FloatTensor(int size, MemorySegment memorySegment) {
         this.size = size;
         this.memorySegment = memorySegment;
-        //this.device = new DeviceBuffer(memorySegment.asByteBuffer(), GGMLType.F16.getBlockSize(), GGMLType.F16.getTypeSize(), GGMLType.FLOAT16_BYTES, DeviceBuffer.GGUFQ.F16.ordinal());
     }
 
     @Override
@@ -66,10 +64,7 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
     protected long totalBytes() { 
     	return size(); 
     }
-	@Override
-	public MemorySegment asSlice(long offSet1, long offSet2) {
-		return memorySegment.asSlice(offSet1, offSet2);
-	}
+
     @Override
     public long getOffsetBytes(long elementOffset) {
         long blockIndex = elementOffset / GGMLType.F16.getBlockSize();
@@ -98,24 +93,11 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 	}
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-    	if(FloatTensor.USE_CUDA) {
-    		//return cuBLASdot(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		//return cuBLASdotDevice(thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		try {
-    			return cudaSdotSliceDevice(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		} catch (Throwable e) {
-    			if (FloatTensor.USE_VECTOR_API) {
-    				return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    			} else {
-    				return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-    			}
-    		}
-    	} else
-    		if (FloatTensor.USE_VECTOR_API) {
-    			return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
-    		} else {
-    			return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
-    		}
+    	if(FloatTensor.USE_CUDA)
+    		return cudaDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    	if (FloatTensor.USE_VECTOR_API)
+    		return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
+    	return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
     }
 
     private static float vectorDot(F16FloatTensor thiz, int thisOffset, ArrayFloatTensor that, int thatOffset, int size) {
@@ -200,54 +182,6 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 		return 0;
 	}
 
-	   @Override
-	    public FloatSliceView sliceView(int offset, int length) {
-	        return new F16SliceView(memorySegment, offset, length);
-	    }
-
-	    @Override
-	    public float[] exportSlice(float[] dst, int dstOffset, int offset, int length) {
-	        final int bytesPerElem = GGMLType.FLOAT16_BYTES; // 2
-	        int i = 0;
-
-	        if (FloatTensor.USE_VECTOR_API) {
-	            // Short lanes == float lanes (as in your vectorDot)
-	            assert S_SPECIES_HALF.length() == F_SPECIES.length();
-	            final int upper = F_SPECIES.loopBound(length);
-	            long baseBytes = (long) offset * bytesPerElem;
-
-	            for (; i < upper; i += F_SPECIES.length(), baseBytes += (long) F_SPECIES.length() * bytesPerElem) {
-	                ShortVector bits16 = ShortVector.fromMemorySegment(
-	                        S_SPECIES_HALF, memorySegment, baseBytes, ByteOrder.LITTLE_ENDIAN);
-
-	                // Fast f16→f32 widening with DAZ (denormals-are-zero), no NaN/Inf handling
-	                IntVector bits32 = bits16
-	                        .castShape(I_SPECIES, 0)
-	                        .reinterpretAsInts();
-
-	                // zeroExponentMask = (exp == 0) ? 0 : ~0
-	                IntVector zeroExponentMask = bits32.and(0x7C00).neg().lanewise(VectorOperators.ASHR, 31);
-
-	                bits32 = bits32.and(0x8000).lanewise(VectorOperators.LSHL, 16) // sign << 16
-	                        .or(
-	                            bits32.and(0x7FFF)                 // strip sign
-	                                  .add(0x1C000)               // bias/mantissa adjust
-	                                  .lanewise(VectorOperators.LSHL, 13)
-	                                  .and(zeroExponentMask)      // DAZ + preserve zeros
-	                        );
-
-	                FloatVector fv = bits32.reinterpretAsFloats();
-	                fv.intoArray(dst, dstOffset + i);
-	            }
-	        }
-
-	        // Tail: correctness over speed
-	        for (; i < length; i++) {
-	            dst[dstOffset + i] = Float.float16ToFloat(
-	                    readShort(memorySegment, (long) (offset + i) * bytesPerElem));
-	        }
-	        return dst;
-	    }
 	    private static short floatToF16(float f) {
 	        return Float.floatToFloat16(f);
 	    }
@@ -262,19 +196,5 @@ final class F16FloatTensor extends FloatTensor implements Externalizable, Compar
 	        }
 	        return this;
 	    }
-	 // Read-only view for CPU paths
-	    final class F16SliceView implements FloatSliceView {
-	        final MemorySegment seg; 
-	        final int base; 
-	        final int len;
-	        F16SliceView(MemorySegment s, int base, int len) { 
-	        	this.seg = s; 
-	        	this.base = base; 
-	        	this.len = len; 
-	        }
-	        public int length(){ return len; }
-	        public float get(int i){
-	            return Float.float16ToFloat(readShort(seg, (long) (base + i) * GGMLType.FLOAT16_BYTES));
-	        }
-	    }
+	
 }
