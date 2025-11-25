@@ -141,16 +141,15 @@ public final class DeviceManager {
 		}
 	}
 	
-	static FloatTensor softmaxCpu(FloatTensor thiz, int thisOffset, int size, int columns) {
+	static void softmaxCpu(FloatTensor thiz, int thisOffset, int size, int columns) {
 		//reclaimTest(thiz, "softmax");
 		float maxVal = thiz.max(thisOffset, size);
 		// exp and sum
 		thiz.mapInPlace(thisOffset, size, f -> (float) Math.exp(f - maxVal));
 		float sum = thiz.sum(thisOffset, size);
 		// normalize
-		FloatTensor res = thiz.divideInPlace(thisOffset, size, sum);
+		thiz.divideInPlace(thisOffset, size, sum);
 		//offer(thiz, "softmax", true);
-		return res;
 	}
 	
 	//launch_rmsnorm_fp32_rowmajor(uint8_t* qA, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
@@ -230,23 +229,23 @@ public final class DeviceManager {
     }
     
     static void qkScores(FloatTensor q, int qOffset, FloatTensor keyCache,  
-	    FloatTensor Att, int attOffset, int position, int token, int h, int headSize, int kvDim, int kvMul ) {
+	    FloatTensor Att, int attOffset, int position, int token, int h, int headSize, int numHeads, int contextLength, int kvDim, int kvMul ) {
     	try {
     		offer(q, "qkScore q", false);
     		offer(keyCache, "qkScore keyCache", false);
     		offer(Att, "qkScore Att", false);
 			Llama3.launchQK.invokeExact(q.devicePtrOr0(), qOffset, q.getFormatType(), q.type().getBlockSize(), q.type().getTypeSize(), q.getHeadSize(),
 					keyCache.devicePtrOr0(), keyCache.getFormatType(), keyCache.type().getBlockSize(), keyCache.type().getTypeSize(), keyCache.getHeadSize(),
-					Att.devicePtrOr0(), attOffset, position, token, h, headSize, kvDim, kvMul);
+					Att.devicePtrOr0(), attOffset, position, token, h, headSize, numHeads, contextLength, kvDim, kvMul);
 		} catch (Throwable e) {
 			throw new RuntimeException(e);
 		}
     }
     
     static void qkScoresCpu(FloatTensor q, int qOffset, FloatTensor keyCache,  
-    	    FloatTensor Att, int attOffset, int position, int token, int h, int headSize, int kvDim, int kvMul ) {
+    	    FloatTensor Att, int attOffset, int position, int token, int h, int headSize, int numHeads, int contextLength, int kvDim, int kvMul ) {
     		float sqrtHeadSize = (float) Math.sqrt(headSize);
-    		System.out.printf("qkscores= qOff=%d attOff=%d pos=%d, token=%d, h=%d, headsize=%d kvDim=%d kvMul=%d\n",qOffset, attOffset, position, token,h,headSize, kvDim, kvMul);
+    		//System.out.printf("qkscores= qOff=%d attOff=%d pos=%d, token=%d, h=%d, headsize=%d kvDim=%d kvMul=%d\n",qOffset, attOffset, position, token,h,headSize, kvDim, kvMul);
         	try {
         		//reclaimTest(q, "qkScore q");
         		//reclaimTest(keyCache, "qkScore keyCache");

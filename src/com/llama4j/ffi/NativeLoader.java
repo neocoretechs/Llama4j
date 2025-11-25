@@ -254,6 +254,8 @@ public final class NativeLoader {
 						ValueLayout.JAVA_INT,     // token 
 						ValueLayout.JAVA_INT,     // h
 						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT,     // numHeads
+						ValueLayout.JAVA_INT,     // contextLength
 						ValueLayout.JAVA_INT,     // kvDim
 						ValueLayout.JAVA_INT	  // kvMul
 						));
