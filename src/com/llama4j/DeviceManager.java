@@ -131,17 +131,17 @@ public final class DeviceManager {
 	    }
 	}
 	
-	static FloatTensor softmax(FloatTensor thiz, int thisOffset, int size, int columns) {
+	static FloatTensor softmax(FloatTensor thiz, int thisOffset, int size) {
 		try {
 			offer(thiz, "softmax", false);
-			Llama3.launchSoftmaxInplace.invokeExact(thiz.devicePtrOr0(), size, columns, thisOffset);
+			Llama3.launchSoftmaxInplace.invokeExact(thiz.devicePtrOr0(), thisOffset, size);
 			return thiz;
 		} catch (Throwable e) {
 			throw new RuntimeException(e);
 		}
 	}
 	
-	static void softmaxCpu(FloatTensor thiz, int thisOffset, int size, int columns) {
+	static void softmaxCpu(FloatTensor thiz, int thisOffset, int size) {
 		//reclaimTest(thiz, "softmax");
 		float maxVal = thiz.max(thisOffset, size);
 		// exp and sum

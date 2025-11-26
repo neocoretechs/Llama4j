@@ -421,17 +421,18 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     FloatTensor softmaxInPlace(int thisOffset, int size) {
-    	//if(USE_CUDA) {
-    	//	try {
-    	//		if(Llama3.CPU_BYPASS_TEST)
-    	//			return DeviceManager.softmaxCpu(this, thisOffset, size, 1);
-    	//		else {
-    	//			return DeviceManager.softmax(this, thisOffset, size, 1);
-    	//		}
-    	//	} catch (Throwable e) {
-    	//		throw new RuntimeException(e);
-    	//	}
-    	//}
+    	if(USE_CUDA) {
+    		try {
+    			if(Llama3.CPU_BYPASS_TEST)
+    				DeviceManager.softmaxCpu(this, thisOffset, size);
+    			else {
+    				DeviceManager.softmax(this, thisOffset, size);
+    			}
+    		} catch (Throwable e) {
+    			throw new RuntimeException(e);
+    		}
+    		return this;
+    	}
     	//try (Timer timer = Timer.log("CPU SoftMax:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
     	// find max value (for numerical stability)
     	float maxVal = max(thisOffset, size);

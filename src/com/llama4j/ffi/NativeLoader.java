@@ -158,21 +158,12 @@ public final class NativeLoader {
 						)
 				);
 		System.out.println("launch_rmsnorm_fp32_rowmajor:"+Llama3.launchRmsnorm);
-		Llama3.launchSoftmax = linker.downcallHandle(
-				lookup.find("launch_row_softmax_fp32").get(),
-				FunctionDescriptor.ofVoid(
-						ValueLayout.ADDRESS, ValueLayout.ADDRESS, // S, A
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // rows, cols
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT  // ldS, ldA strides
-						)
-				);
-		System.out.println("launch_row_softmax_fp32:"+Llama3.launchSoftmax);
 		Llama3.launchSoftmaxInplace = linker.downcallHandle(
 				lookup.find("launch_row_softmax_inplace_fp32").get(),
 				FunctionDescriptor.ofVoid(
 						ValueLayout.JAVA_LONG, // S device address
-						ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, // rows, cols
-						ValueLayout.JAVA_INT  // offset
+						ValueLayout.JAVA_INT, // offset
+						ValueLayout.JAVA_INT  // size
 						)
 				);
 		System.out.println("launch_row_softmax_inplace_fp32:"+Llama3.launchSoftmaxInplace);

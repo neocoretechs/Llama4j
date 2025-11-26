@@ -103,7 +103,6 @@ public class Llama3 {
     public static MethodHandle sdotSimple;
     public static MethodHandle launchRmsnorm;
     public static MethodHandle launchQK;
-    public static MethodHandle launchSoftmax;
 	public static MethodHandle launchSoftmaxInplace;
     public static MethodHandle launchAV;
 	public static MethodHandle launchMatmul;
@@ -2108,7 +2107,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             	long nanos2 = System.nanoTime();
             	// compute qk scores and softmax on device
             	ArrayFloatTensor att2 = null;
-            	//if(Llama3.CPU_BYPASS_TEST) {
+            	if(Llama3.CPU_BYPASS_TEST) {
             		//DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
             		//		state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
                   	att2 = (ArrayFloatTensor) ArrayFloatTensor.allocate(position+token+1);
@@ -2116,7 +2115,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             		DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
             				att2, 0, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
             		//att2.copyTo(0, state.att[token], attOffset, position+token+1);
-            	//} else {
+            	} else {
                     //for (int t = 0; t <= position + token; t++) {
                     	//DeviceManager.reclaim(state.q[token],"qk scores state.q[token] "+t);
                     	// get the key vector for this head and at this timestep
@@ -2138,8 +2137,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             		//for(int i = 0; i <= position+token; i++) 
         			//	System.out.println("state.att[token] len="+state.att[token].size()+" token="+token+" attOffset="+attOffset+" i= "+i+" state.att[token](attOffset+i)="+state.att[token].getFloat(attOffset+i));
         				
-            	//}
-        		//if(Llama3.CPU_BYPASS_TEST) {
+            	}
+        		if(Llama3.CPU_BYPASS_TEST) {
         			for(int i = 0; i <= position+token; i++) {
         				//System.out.println("state.att[token]="+token+":"+(attOffset+i)+".) "+state.att[token].getFloat(attOffset+i));
         				if (Float.isNaN(state.att[token].getFloat(attOffset+i)) || Float.isNaN(att2.getFloat(i))) 
@@ -2152,7 +2151,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         					System.out.println("h="+h+" token="+token+" attOffset="+attOffset+" i="+i+" diff: "+(Math.abs(state.att[token].getFloat(attOffset+i)-att2.getFloat(i))+" a="+state.att[token].getFloat(attOffset+i)+", b="+att2.getFloat(i))+ (boundsOut ? " ***OOB***" : ""));
         				}
         			}
-        		//}
+        		}
             	// weighted sum of the values, store back into xb
             	// float* xb = s.xb + h * headSize;
             	//state.att[token].softmaxInPlace(attOffset, position + token + 1);
