@@ -170,7 +170,9 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     public boolean isUploaded() {
     	return uploaded;
     }
- 
+    public void setModified() {
+    	uploaded = false;
+    }
     public void copyHostToDevice(String id) {
         MemorySegment hostSeg = getSegment();
         long bytes = totalBytes();

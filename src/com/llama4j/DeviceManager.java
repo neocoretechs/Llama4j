@@ -44,7 +44,7 @@ public final class DeviceManager {
 				status.uploadBytes += t.totalBytes();
 				++status.uploads;
 			} else {
-				if(reupload) {
+				if(!t.isUploaded() || reupload) { // might have been marked dirty by setModified
 					t.copyHostToDevice(id);
 					status.uploadBytes += t.totalBytes();
 					++status.uploads;
@@ -275,7 +275,7 @@ public final class DeviceManager {
                 	Att.setFloat(attOffset + t, score);
                 }
                 nanos2 = System.nanoTime() - nanos2;
-                // softmax the scores to get attention weights, from 0..position inclusively
+                //softmax the scores to get attention weights, from 0..position inclusively
                 Att.softmaxInPlace(attOffset, position + token + 1);
           		//offer(q, "qkScore q", true);
         		//offer(keyCache, "qkScore keyCache", true);

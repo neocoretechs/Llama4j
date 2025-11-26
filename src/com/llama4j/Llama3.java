@@ -2083,6 +2083,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             //for(int t = 0; t < nTokens; t++) {
                 state.k[t].copyTo(0, state.keyCache[curLayer], (position + t) * kvDim, kvDim);
                 state.v[t].copyTo(0, state.valueCache[curLayer], (position + t) * kvDim, kvDim);
+                state.keyCache[curLayer].setModified();
+                state.valueCache[curLayer].setModified();
             });
     		//}
             // If the logits are not required, the attention and FFN of the last layer can be skipped entirely.
@@ -2092,8 +2094,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             }
             // original multihead attention. iterate over all heads
       		//try (Timer timer = Timer.log("CPU Multihead Attn layer:"+l,TimeUnit.MICROSECONDS)) {
-            Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
-            //for(long ht = 0; ht < ((long) nTokens * (long) config.numberOfHeads); ht++) {
+            //Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
+            for(long ht = 0; ht < ((long) nTokens * (long) config.numberOfHeads); ht++) {
             	int token = (int) (ht / config.numberOfHeads);
             	int h = (int) (ht % config.numberOfHeads);
             	// get the query vector for this head
@@ -2106,14 +2108,15 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             	long nanos2 = System.nanoTime();
             	// compute qk scores and softmax on device
             	ArrayFloatTensor att2 = null;
-            	if(Llama3.CPU_BYPASS_TEST) {
+            	//if(Llama3.CPU_BYPASS_TEST) {
             		//DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
-            		//		state.att[token], attOffset, position, token, h, headSize, kvDim, kvMul );
-                  	att2 = (ArrayFloatTensor) ArrayFloatTensor.allocate(state.att[token].size());
-                	state.att[token].copyTo(0,  att2,  0,  state.att[token].size());
+            		//		state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
+                  	att2 = (ArrayFloatTensor) ArrayFloatTensor.allocate(position+token+1);
+                	state.att[token].copyTo(attOffset,  att2,  0,  position+token+1);
             		DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
             				att2, 0, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
-            	} else {
+            		//att2.copyTo(0, state.att[token], attOffset, position+token+1);
+            	//} else {
                     //for (int t = 0; t <= position + token; t++) {
                     	//DeviceManager.reclaim(state.q[token],"qk scores state.q[token] "+t);
                     	// get the key vector for this head and at this timestep
@@ -2126,18 +2129,30 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                     	//state.att[token].setFloat(attOffset + t, score);
                     	//System.out.printf("qkscores= qOff=%d attOff=%d pos=%d, token=%d, h=%d, headsize=%d kvDim=%d kvMul=%d\n",qOffset, attOffset, position, token,h,headSize, kvDim, kvMul);
                     //}
-                  
+            		state.q[token].setModified();
+            		state.att[token].setModified();
             		DeviceManager.qkScores(state.q[token], qOffset, state.keyCache[curLayer], 
             				state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
             		DeviceManager.reclaim(state.att[token],"qkScores state.att[token]");
-            	}
-        		if(Llama3.CPU_BYPASS_TEST) {
+            		//state.att[token].softmaxInPlace(attOffset, position + token + 1);
+            		//for(int i = 0; i <= position+token; i++) 
+        			//	System.out.println("state.att[token] len="+state.att[token].size()+" token="+token+" attOffset="+attOffset+" i= "+i+" state.att[token](attOffset+i)="+state.att[token].getFloat(attOffset+i));
+        				
+            	//}
+        		//if(Llama3.CPU_BYPASS_TEST) {
         			for(int i = 0; i <= position+token; i++) {
         				//System.out.println("state.att[token]="+token+":"+(attOffset+i)+".) "+state.att[token].getFloat(attOffset+i));
-        				if(Math.abs(state.att[token].getFloat(attOffset+i)-att2.getFloat(i)) > 1e-5)
-        					System.out.println("diff "+i+" "+state.att[token].getFloat(attOffset+i)+", "+att2.getFloat(i));
+        				if (Float.isNaN(state.att[token].getFloat(attOffset+i)) || Float.isNaN(att2.getFloat(i))) 
+        				    System.out.println("token="+token+" attOffset="+attOffset+" i="+i+"***NaN a="+state.att[token].getFloat(attOffset+i)+" b="+att2.getFloat(i));
+        				else{
+        					boolean boundsOut = false;
+        					if(Math.abs(state.att[token].getFloat(attOffset+i)-att2.getFloat(i)) > 1e-5)
+        						boundsOut = true;
+        					//if(boundsOut)
+        					System.out.println("h="+h+" token="+token+" attOffset="+attOffset+" i="+i+" diff: "+(Math.abs(state.att[token].getFloat(attOffset+i)-att2.getFloat(i))+" a="+state.att[token].getFloat(attOffset+i)+", b="+att2.getFloat(i))+ (boundsOut ? " ***OOB***" : ""));
+        				}
         			}
-        		}
+        		//}
             	// weighted sum of the values, store back into xb
             	// float* xb = s.xb + h * headSize;
             	//state.att[token].softmaxInPlace(attOffset, position + token + 1);
@@ -2157,8 +2172,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                         state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
                     }
             	//}
-            });
-      		//}
+            //});
+      		}
             //----end original multihead attention
     		//try (Timer timer = Timer.log("Final matmul and residual connection layer:"+l,TimeUnit.MICROSECONDS)) {
             // final matmul to get the output of the attention
@@ -2218,8 +2233,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		//}
         }
         //System.out.println("<<<END LAYER LOOP");
-        DeviceManager.report();
-        DeviceManager.reset();
+        //DeviceManager.report();
+        //DeviceManager.reset();
         // final rmsnorm
         //Parallel.parallelFor(0, nTokens, t -> {
         for(int t = 0; t < nTokens; t++)
