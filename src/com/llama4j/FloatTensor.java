@@ -93,11 +93,19 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-      	//if(FloatTensor.USE_CUDA) 
-      	//	return cudaDot(this, thisOffset, that, thatOffset, size);
+      	if(FloatTensor.USE_CUDA) 
+      		return cudaDot(this, thisOffset, that, thatOffset, size);
 		return scalarDot(this, thisOffset, that, thatOffset, size);
     }
-    
+    /**
+     * If USE_CUDA flag is set, all sdot routes throug here.
+     * @param thiz
+     * @param thisOffset
+     * @param that
+     * @param thatOffset
+     * @param size
+     * @return
+     */
     public static float cudaDot(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) {
     	if(DEBUG)
     		System.out.printf("%s thread:%s thisOffset:%d thatOffset:%d size:%d%n", 
@@ -239,16 +247,10 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	//long nanos1 = System.nanoTime();
     	if(FloatTensor.USE_CUDA) {
       		//System.out.println("GPU test STARTED for SINGLE: dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that len:"+that.size()+" out len:"+out.size());
-    		//try {
-    			if(Llama3.CPU_BYPASS_TEST || Llama3.MATMUL_CPU)
-    				DeviceManager.matmulCpu(this, that, out, dim0, dim1);
-    			else {
-    				DeviceManager.matmul(this, that, out, dim0, dim1);
-    			}
+    		if(!Llama3.CPU_BYPASS_TEST && !Llama3.MATMUL_CPU) {
+    			DeviceManager.matmul(this, that, out, dim0, dim1);
 		   		return;
-			//} catch (Throwable e) {
-			//	throw new RuntimeException(e);
-			//}
+    		}
     	}
     	/*
     	out.copyDeviceToHost("comparison test");
@@ -285,19 +287,12 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	if(FloatTensor.USE_CUDA) {
     		//Parallel.parallelFor(0, context, idxArr -> {
     		//System.out.println("GPU test STARTED for context:"+context+" dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that array len:"+that.length+" out array len:"+out.length);
-    		for(int ti=0 ; ti < dim0*context; ti++) {
-    		   	int idxArr = (int) (ti / dim0);
-    		  	//long nanos1 = System.nanoTime();
-    		   	if(Llama3.CPU_BYPASS_TEST || Llama3.MATMUL_CPU)
-    				DeviceManager.matmulCpu(this, that[idxArr], out[idxArr], dim0, dim1);
-    			else
-    				DeviceManager.matmul(this, that[idxArr], out[idxArr], dim0, dim1);
-    			 //Parallel.parallelForLong(0, dim0 * context, ti -> {
-    		    //	int idxArr = (int) (ti / dim0);
-    		    //	int i = (int) (ti % dim0);
-    			//  out[idxArr].setFloat(i, DeviceManager.sdot(this, i * dim1, that[idxArr], 0, dim1)); 
-    	        //});
-    		}
+ 		   	if(!Llama3.CPU_BYPASS_TEST && !Llama3.MATMUL_CPU) {
+				for(int idxArr=0 ; idxArr < context; idxArr++) {
+    				DeviceManager.matmul(this, that[idxArr], out[idxArr], dim0, dim1); // we do the dot inside the device
+				}
+				return;
+ 		   	}
  	   		/*for(int i = 0; i < context; i++)
 	   			out[i].copyDeviceToHost("comparison test");
     		FloatTensor[] test = new FloatTensor[out.length];
@@ -330,7 +325,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     			//	throw new RuntimeException(e);
     			//}*/
     		//});
-    		return;
+    		//return;
+ 		   	//}
     	}
     	//
     	// matrix multiply using scalar dot product with vector processing if available, CPU otherwise

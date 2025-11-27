@@ -83,10 +83,10 @@ public class Llama3 {
     public final static boolean DEBUG = false;
     public final static boolean DISPLAY_METADATA = true;
     public static boolean CPU_BYPASS_TEST = false;
-    public static boolean RMSNORM_CPU = true;
+    public static boolean RMSNORM_CPU = false;
 	public static boolean MATMUL_CPU = true;
 	public static boolean SDOT_CPU = true;
-	public static boolean WEIGHTEDSUM_CPU = true;
+	public static boolean WEIGHTEDSUM_CPU = false;
     public static AsynchRelatrixClientTransaction dbClient = null;
     public static TransactionId xid = null;
     public static Alias tensorAlias = null;
@@ -1552,7 +1552,7 @@ final class ModelLoader {
 }
 
 record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights weights) {
-    private static boolean DEBUG = false;;
+    private static boolean DEBUG = false;
 
 	public State createNewState(int batchsize, int beginOfText) {
         State state = new State(configuration(), batchsize);
@@ -2051,10 +2051,12 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         for (int l = 0; l < config.numberOfLayers; l++) {
             // attention rmsnorm
             final int curLayer = l;
-            Parallel.parallelFor(0, nTokens, t ->
+            Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
-                rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight_dev[curLayer], dim, config.rmsNormEps)
-            );
+                rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight_dev[curLayer], dim, config.rmsNormEps);
+                if(!Llama3.CPU_BYPASS_TEST && !Llama3.RMSNORM_CPU)
+                	DeviceManager.reclaim(state.xb[t],"rmsnorm xb[t] "+t);
+            });
     		//try (Timer timer = Timer.log("qkv matmuls layer:"+l,TimeUnit.MICROSECONDS)) {
             // qkv matmuls for this position
             weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
@@ -2198,6 +2200,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
                 rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight_dev[curLayer], dim, config.rmsNormEps);
+                if(!Llama3.CPU_BYPASS_TEST && !Llama3.RMSNORM_CPU)
+                	DeviceManager.reclaim(state.xb[t],"rmsnorm xb[t] "+t);
             });
     		//}
     		//try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l,TimeUnit.MICROSECONDS)) {
@@ -2248,6 +2252,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         Parallel.parallelFor(0, nTokens, t -> {
         //for(int t = 0; t < nTokens; t++)
             rmsnorm(state.x[t], state.x[t], weights.rms_final_weight_dev, dim, config.rmsNormEps);
+            if(!Llama3.CPU_BYPASS_TEST && !Llama3.RMSNORM_CPU)
+            	DeviceManager.reclaim(state.x[t],"rmsnorm x[t] "+t);
         });      
         if(false) {
         	try (Timer timer = Timer.log("Store Tensor:")) {

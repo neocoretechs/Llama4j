@@ -331,22 +331,7 @@ public final class DeviceManager {
 		}
     }
     
-    static void matmulCpu(FloatTensor thiz, FloatTensor that, FloatTensor out, int dim0, int dim1) {
- 		try {
- 			//reclaimTest(thiz, "matmul this");
- 			//reclaimTest(that, "matmul that");
- 			//reclaimTest(out, "matmul out");
- 			//Llama3.launchMatmul.invokeExact(thiz.devicePtrOr0(), 0, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
- 			//		that.devicePtrOr0(), 0, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(), 
- 			//		out.devicePtrOr0(), dim0, dim1);
- 			Parallel.parallelFor(0, dim0, i -> out.setFloat(i, FloatTensor.scalarDot(thiz, i * dim1, that, 0, dim1)));
- 			//offer(thiz, "matmul this", true);
- 			//offer(that, "matmul that", true);
- 			//offer(out, "matmul out", true);
- 		} catch (Throwable e) {
- 			throw new RuntimeException(e);
- 		}
-     }
+    
     protected static void printParallelMatmul() {
         /*System.out.println("Parallel matmul print start:");
         Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
