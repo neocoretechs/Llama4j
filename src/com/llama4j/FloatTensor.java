@@ -85,8 +85,6 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     public static float scalarDot(FloatTensor thiz, int thisOffset, FloatTensor that, int thatOffset, int size) {
         float result = 0f;
-        //if(USE_CUDA)
-        	//return cudaDot(thiz, thisOffset, that, thatOffset, size);
         for (int j = 0; j < size; j++) {
             result += thiz.getFloat(thisOffset + j) * that.getFloat(thatOffset + j);
             //System.out.printf("CPU %d) dot1 = %.6f dot2 = %.6f result = %.6f %n", j, thiz.getFloat(thisOffset + j) , that.getFloat(thatOffset + j), result);
@@ -95,6 +93,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     }
     
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
+      	//if(FloatTensor.USE_CUDA) 
+      	//	return cudaDot(this, thisOffset, that, thatOffset, size);
 		return scalarDot(this, thisOffset, that, thatOffset, size);
     }
     
@@ -103,19 +103,18 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		System.out.printf("%s thread:%s thisOffset:%d thatOffset:%d size:%d%n", 
     				thiz.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size);
     	float result = 0.0f;
-    	/*try {
-    	if(Llama3.CPU_BYPASS_TEST)
-    		result = DeviceManager.sdotCpu(thiz, thisOffset,that, thatOffset, size);
-    	else {
-    		result = DeviceManager.sdot(thiz, thisOffset,that, thatOffset, size);
-    	}
-    	if(DO_SDOT_COMPARE)
+    	try {
+    		if(Llama3.CPU_BYPASS_TEST || Llama3.SDOT_CPU) {
+    			result = DeviceManager.sdotCpu(thiz, thisOffset,that, thatOffset, size);
+    		} else {
+    			result = DeviceManager.sdot(thiz, thisOffset,that, thatOffset, size);
+    		}
+    		if(DO_SDOT_COMPARE)
     			compareSdotTest(result, thiz, thisOffset, that, thatOffset, size);
     	} catch(Throwable e) {
     		throw new RuntimeException(e);
-    	}*/
-    	result = scalarDot(thiz, thisOffset, that, thatOffset, size);
-      	return result;
+    	}
+    	return result;
     }
     /**
      * Compare the result of GPU sdot and CPU sdot to test numeric drift. Since sdot is the backbone of all our
@@ -126,9 +125,9 @@ public abstract class FloatTensor implements Externalizable, Comparable {
  		float result2 = scalarDot(thiz, thisOffset, that, thatOffset, size);
   		if(Math.abs(GPUresult - result2) > 1e-5f) {
 			++dontMatch;
-			if(DEBUG)
-				System.out.printf("Sdot values dont match: %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  r=%.6f r2=%.6f%n", 
-				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, GPUresult, result2);	
+			//if(DEBUG)
+				System.out.printf("Sdot values dont match: %s %s thread:%s thisOffset:%d thatOffset:%d size:%d  GPU=%.6f CPU=%.6f %d dont match out of %d%n", 
+				thiz.getClass().getName(), that.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size, GPUresult, result2, dontMatch, totalSdot);	
 		}
  		++totalSdot;
     }
@@ -229,18 +228,24 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         }
         return array;
     }
-    
+    /**
+     * Matrix multiply single tensor
+     * @param that
+     * @param out
+     * @param dim0
+     * @param dim1
+     */
     void matmul(FloatTensor that, FloatTensor out, int dim0, int dim1) {
     	//long nanos1 = System.nanoTime();
     	if(FloatTensor.USE_CUDA) {
       		//System.out.println("GPU test STARTED for SINGLE: dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that len:"+that.size()+" out len:"+out.size());
     		//try {
-    			//if(Llama3.CPU_BYPASS_TEST)
-    				//DeviceManager.matmulCpu(this, that, out, dim0, dim1);
-    			//else {
-    				//DeviceManager.matmul(this, that, out, dim0, dim1);
-    			//}
-		   		//return;
+    			if(Llama3.CPU_BYPASS_TEST || Llama3.MATMUL_CPU)
+    				DeviceManager.matmulCpu(this, that, out, dim0, dim1);
+    			else {
+    				DeviceManager.matmul(this, that, out, dim0, dim1);
+    			}
+		   		return;
 			//} catch (Throwable e) {
 			//	throw new RuntimeException(e);
 			//}
@@ -261,9 +266,18 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     			System.out.println("Gpu does not match "+i+".) "+out.getFloat(i)+", "+test.getFloat(i));
    		System.out.println("GPU test ENDED for SINGLE: dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that len:"+that.size()+" out len:"+out.size());
    		*/
+    	//-----
+    	// CPU implementation for vector processing if available
    		Parallel.parallelFor(0, dim0, i -> out.setFloat(i, dot(i * dim1, that, 0, dim1)));
     }
-    
+    /**
+     * Matrix multiply array of tensors
+     * @param context
+     * @param that
+     * @param out
+     * @param dim0
+     * @param dim1
+     */
     void matmul(int context, FloatTensor[] that, FloatTensor[] out, int dim0, int dim1) {
     	if (that.length != out.length) {
     		throw new IllegalArgumentException(String.format("that.len=%d, out.len=%d", that.length, out.length));
@@ -271,22 +285,19 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	if(FloatTensor.USE_CUDA) {
     		//Parallel.parallelFor(0, context, idxArr -> {
     		//System.out.println("GPU test STARTED for context:"+context+" dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that array len:"+that.length+" out array len:"+out.length);
-    		//for(int ti=0 ; ti < dim0*context; ti++) {
-    			//try {
-    		  	 	//long nanos1 = System.nanoTime();
-    				//if(Llama3.CPU_BYPASS_TEST)
-    					//DeviceManager.matmulCpu(this, that[idxArr], out[idxArr], dim0, dim1);
-    				//else
-    					//DeviceManager.matmul(this, that[idxArr], out[idxArr], dim0, dim1);
-    			 	//Parallel.parallelForLong(0, dim0 * context, ti -> {
-    		    	//	int idxArr = (int) (ti / dim0);
-    		    	//	int i = (int) (ti % dim0);
-    				//  out[idxArr].setFloat(i, DeviceManager.sdot(this, i * dim1, that[idxArr], 0, dim1)); 
-    	        	//});
-    			//} catch (Throwable e) {
-    			//	throw new RuntimeException(e);
-    			//}
-    		//}
+    		for(int ti=0 ; ti < dim0*context; ti++) {
+    		   	int idxArr = (int) (ti / dim0);
+    		  	//long nanos1 = System.nanoTime();
+    		   	if(Llama3.CPU_BYPASS_TEST || Llama3.MATMUL_CPU)
+    				DeviceManager.matmulCpu(this, that[idxArr], out[idxArr], dim0, dim1);
+    			else
+    				DeviceManager.matmul(this, that[idxArr], out[idxArr], dim0, dim1);
+    			 //Parallel.parallelForLong(0, dim0 * context, ti -> {
+    		    //	int idxArr = (int) (ti / dim0);
+    		    //	int i = (int) (ti % dim0);
+    			//  out[idxArr].setFloat(i, DeviceManager.sdot(this, i * dim1, that[idxArr], 0, dim1)); 
+    	        //});
+    		}
  	   		/*for(int i = 0; i < context; i++)
 	   			out[i].copyDeviceToHost("comparison test");
     		FloatTensor[] test = new FloatTensor[out.length];
@@ -299,16 +310,16 @@ public abstract class FloatTensor implements Externalizable, Comparable {
         		int i = (int) (ti % dim0);
         		test[idxArr].setFloat(i, dot(i * dim1, that[idxArr], 0, dim1)); 
         	});
-    	        	//long nanos2 = System.nanoTime();
-    	        	//Parallel.parallelFor(0, dim0 , ti -> {
-    	        	//for(int ti = 0; ti < dim0; ti++)
-    	        	//	test.setFloat(i, dot(i * dim1, that[idxArr], 0, dim1));
-    	        	//});
-    	         	//if(nanos1 > nanos2)
-    	        	//	System.out.println("GPU was "+(nanos1-nanos2)+" ns slower");
-    	        	//else
-    	        	//	System.out.println("GPU was "+(nanos2-nanos1)+" ns faster");
-    	        for(int ti = 0; ti < context * dim0; ti++) {
+    	    //long nanos2 = System.nanoTime();
+    	    //Parallel.parallelFor(0, dim0 , ti -> {
+    	    //for(int ti = 0; ti < dim0; ti++)
+    	    //	test.setFloat(i, dot(i * dim1, that[idxArr], 0, dim1));
+    	    //});
+    	    //if(nanos1 > nanos2)
+    	    //	System.out.println("GPU was "+(nanos1-nanos2)+" ns slower");
+    	    //else
+    	    //	System.out.println("GPU was "+(nanos2-nanos1)+" ns faster");
+    	    for(int ti = 0; ti < context * dim0; ti++) {
     	          	int idxArr = (int) (ti / dim0);
     	        	int i = (int) (ti % dim0);
     	        	if(Math.abs(test[idxArr].getFloat(i)-out[idxArr].getFloat(i)) > 1e-5f)
@@ -319,8 +330,11 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     			//	throw new RuntimeException(e);
     			//}*/
     		//});
-    		//return;
+    		return;
     	}
+    	//
+    	// matrix multiply using scalar dot product with vector processing if available, CPU otherwise
+    	//
     	Parallel.parallelForLong(0, dim0 * context, ti -> {
     		int idxArr = (int) (ti / dim0);
     		int i = (int) (ti % dim0);
@@ -433,6 +447,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     		}
     		return this;
     	}
+    	//----------------------
+    	// CPU implementation for vector processing if available
     	//try (Timer timer = Timer.log("CPU SoftMax:"+String.valueOf(size),TimeUnit.MICROSECONDS)) {
     	// find max value (for numerical stability)
     	float maxVal = max(thisOffset, size);
@@ -443,7 +459,15 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	return divideInPlace(thisOffset, size, sum);
     	//}
     }
-
+    /**
+     * ax + y (get it? single prec. ax, plus y is saxpy)
+     * @param thisOffset
+     * @param that
+     * @param thatOffset
+     * @param size
+     * @param a
+     * @return
+     */
     FloatTensor saxpyInPlace(int thisOffset, FloatTensor that, int thatOffset, int size, float a) {
         // this[thatOffset ... thatOffset + size) = a * that[thatOffset ... thatOffset + size) + this[thisOffset ... thisOffset + size)
         for (int i = 0; i < size; ++i) {

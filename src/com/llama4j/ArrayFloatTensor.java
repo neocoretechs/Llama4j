@@ -59,6 +59,7 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 
 	@Override
 	public void setFloat(int index, float value) {
+		setModified();
 		if(FloatTensor.USE_CUDA)
 			memorySegment.setAtIndex(ValueLayout.JAVA_FLOAT, index, value);
 		else
@@ -86,6 +87,7 @@ final class ArrayFloatTensor extends FloatTensor implements Externalizable, Comp
 	}   
 	@Override
 	public FloatTensor fillInPlace(int thisOffset, int size, float value) {
+		setModified();
 		if(FloatTensor.USE_CUDA) {
 			for(int index = thisOffset; index < thisOffset+size; index++)
 				memorySegment.setAtIndex(ValueLayout.JAVA_FLOAT, index, value);

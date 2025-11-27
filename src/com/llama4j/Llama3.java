@@ -83,6 +83,10 @@ public class Llama3 {
     public final static boolean DEBUG = false;
     public final static boolean DISPLAY_METADATA = true;
     public static boolean CPU_BYPASS_TEST = false;
+    public static boolean RMSNORM_CPU = true;
+	public static boolean MATMUL_CPU = true;
+	public static boolean SDOT_CPU = true;
+	public static boolean WEIGHTEDSUM_CPU = true;
     public static AsynchRelatrixClientTransaction dbClient = null;
     public static TransactionId xid = null;
     public static Alias tensorAlias = null;
@@ -117,7 +121,6 @@ public class Llama3 {
 	
 	static ArrayFloatTensor testTensor = null;
 	
-
 	static {
 		NativeLoader.load();
 	}
@@ -1797,7 +1800,14 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                 .mapToObj(i -> ArrayFloatTensor.allocate(dims))
                 .toArray(FloatTensor[]::new);
     }
-
+    /**
+     * FloatBuffer weights for Vector processing
+     * @param out output tensor
+     * @param x target
+     * @param weight Weights loaded to floatbuffer
+     * @param size size of tensor
+     * @param rmsNormEps epsilon omega point
+     */
     static void rmsnorm(FloatTensor out, FloatTensor x, FloatBuffer weight, int size, float rmsNormEps) {
         // calculate sum of squares
         float ss = x.reduce(0, size, 0f, (acc, xi) -> acc + xi * xi);
@@ -1808,26 +1818,21 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         final float finalss = ss; // for the lambda
         out.mapWithIndexInPlace(0, size, (value, index) -> weight.get(index) * (finalss * x.getFloat(index)));
     }
-    
+    /**
+     * FloatTensor weights for GPU processing
+     * @param out output tensor
+     * @param x target
+     * @param weight Weights loaded to floattensor
+     * @param size size of tensor
+     * @param rmsNormEps epsilon omega point
+     */
     static void rmsnorm(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float rmsNormEps) {
     	if(FloatTensor.USE_CUDA) {
-    		//if(Llama3.CPU_BYPASS_TEST)
-    		//	DeviceManager.rmsnormCpu(out, x, weight, size, rmsNormEps);
-    		//else
-    		      // try {
-    		        	//DeviceManager.offer(x, "rmsnorm x", false);
-    		        	//DeviceManager.offer(weight, "rmsnorm weight", false);
-    		        	//DeviceManager.offer(out, "rmsnorm out", false);
-    					//Llama3.launchRmsnorm.invokeExact(x.devicePtrOr0(), 0, x.getFormatType(), x.type().getBlockSize(), x.type().getTypeSize(), x.getHeadSize(),
-    					//		weight.devicePtrOr0(), 0, weight.getFormatType(), weight.type().getBlockSize(), weight.type().getTypeSize(), weight.getHeadSize(),
-    					//		out.devicePtrOr0(), size, rmsNormEps);
-    		    	   // test reclaim let it fall thru to cpu
-    		        	//DeviceManager.reclaimTest(x, "rmsnorm x");
-    		        	//DeviceManager.reclaimTest(out, "rmsnorm out");
-    				//} catch (Throwable e) {
-    				//	throw new RuntimeException(e);
-    				//}
-    		//return;
+    		if(Llama3.CPU_BYPASS_TEST || Llama3.RMSNORM_CPU)
+    			DeviceManager.rmsnormCpu(out, x, weight, size, rmsNormEps);
+    		else
+    			DeviceManager.rmsnormGpu(out, x, weight, size, rmsNormEps);
+    		return;
     	}
     	// calculate sum of squares
     	float ss = x.reduce(0, size, 0f, (acc, xi) -> acc + xi * xi);
@@ -2108,12 +2113,12 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             	// compute qk scores and softmax on device
             	ArrayFloatTensor att2 = null;
             	if(Llama3.CPU_BYPASS_TEST) {
-            		//DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
-            		//		state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
-                  	att2 = (ArrayFloatTensor) ArrayFloatTensor.allocate(position+token+1);
-                	state.att[token].copyTo(attOffset,  att2,  0,  position+token+1);
             		DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
-            				att2, 0, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
+            				state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
+                  	//att2 = (ArrayFloatTensor) ArrayFloatTensor.allocate(position+token+1);
+                	//state.att[token].copyTo(attOffset,  att2,  0,  position+token+1);
+            		//DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
+            		//		att2, 0, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
             		//att2.copyTo(0, state.att[token], attOffset, position+token+1);
             	} else {
                     //for (int t = 0; t <= position + token; t++) {
@@ -2132,13 +2137,14 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             		state.att[token].setModified();
             		DeviceManager.qkScores(state.q[token], qOffset, state.keyCache[curLayer], 
             				state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
-            		DeviceManager.reclaim(state.att[token],"qkScores state.att[token]");
+            		if(Llama3.WEIGHTEDSUM_CPU)
+            			DeviceManager.reclaim(state.att[token],"qkScores state.att[token]");
             		//state.att[token].softmaxInPlace(attOffset, position + token + 1);
             		//for(int i = 0; i <= position+token; i++) 
         			//	System.out.println("state.att[token] len="+state.att[token].size()+" token="+token+" attOffset="+attOffset+" i= "+i+" state.att[token](attOffset+i)="+state.att[token].getFloat(attOffset+i));
         				
             	}
-        		if(Llama3.CPU_BYPASS_TEST) {
+        		/*if(Llama3.CPU_BYPASS_TEST) {
         			for(int i = 0; i <= position+token; i++) {
         				//System.out.println("state.att[token]="+token+":"+(attOffset+i)+".) "+state.att[token].getFloat(attOffset+i));
         				if (Float.isNaN(state.att[token].getFloat(attOffset+i)) || Float.isNaN(att2.getFloat(i))) 
@@ -2151,16 +2157,18 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         					System.out.println("h="+h+" token="+token+" attOffset="+attOffset+" i="+i+" diff: "+(Math.abs(state.att[token].getFloat(attOffset+i)-att2.getFloat(i))+" a="+state.att[token].getFloat(attOffset+i)+", b="+att2.getFloat(i))+ (boundsOut ? " ***OOB***" : ""));
         				}
         			}
-        		}
+        		}*/
             	// weighted sum of the values, store back into xb
             	// float* xb = s.xb + h * headSize;
             	//state.att[token].softmaxInPlace(attOffset, position + token + 1);
             	int xbOffset = h * headSize;
-            	//if(Llama3.CPU_BYPASS_TEST)
-            	//	DeviceManager.weightedSumCpu(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
-            	//else {
-            		//DeviceManager.weightedSum(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
-                    state.xb[token].fillInPlace(xbOffset, headSize, 0f);
+            	if(Llama3.CPU_BYPASS_TEST || Llama3.WEIGHTEDSUM_CPU) {
+            		DeviceManager.weightedSumCpu(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
+            	} else {
+            		DeviceManager.weightedSum(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
+            		DeviceManager.reclaim(state.att[token],"qkScores state.att[token]");
+            		DeviceManager.reclaim(state.xb[token],"qkScores state.xb[token]");
+            		/*state.xb[token].fillInPlace(xbOffset, headSize, 0f);
                     for (int t = 0; t <= position + token; t++) {
                         // get the value vector for this head and at this timestep
                         // float* v = s.value_cache + loff + t * dim + h * headSize;
@@ -2169,8 +2177,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
                         float a = state.att[token].getFloat(attOffset + t);
                         // accumulate the weighted value into xb
                         state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
-                    }
-            	//}
+                    }*/
+            	}
             //});
       		}
             //----end original multihead attention
@@ -2187,10 +2195,10 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		//}
     		//try (Timer timer = Timer.log("FFN RMSNorm layer:"+l,TimeUnit.MICROSECONDS)) {
             // ffn rmsnorm
-            //Parallel.parallelFor(0, nTokens, t -> {
-            for(int t = 0; t < nTokens; t++)
+            Parallel.parallelFor(0, nTokens, t -> {
+            //for(int t = 0; t < nTokens; t++)
                 rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight_dev[curLayer], dim, config.rmsNormEps);
-            //});
+            });
     		//}
     		//try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l,TimeUnit.MICROSECONDS)) {
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -2203,15 +2211,15 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             //}
             // SwiGLU non-linearity
             // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
-            //Parallel.parallelFor(0, nTokens, t -> {
-            for(int t = 0; t < nTokens; t++)
+            Parallel.parallelFor(0, nTokens, t -> {
+            //for(int t = 0; t < nTokens; t++)
                 state.hb[t].mapInPlace(value -> value / (float) (1.0 + Math.exp(-value)));
-            //});
+            });
             // elementwise multiply with w3(x)
-            //Parallel.parallelFor(0, nTokens, t -> {
-            for(int t = 0; t < nTokens; t++)
+            Parallel.parallelFor(0, nTokens, t -> {
+            //for(int t = 0; t < nTokens; t++)
                 state.hb[t].multiplyInPlace(state.hb2[t]);
-            //});
+            });
        		//for(int i = 0; i < nTokens; i++) {
        			//DeviceManager.reclaim(state.x[i],"state.x[i] i="+i+" final matmul");
        			//DeviceManager.reclaim(state.xb[i],"state.xb[i] i="+i+" final matmul");
@@ -2223,22 +2231,24 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
      			//DeviceManager.reclaim(state.xb[i],"state.xb[i] i="+i+" final matmul");
             //}
             // residual connection
-            //Parallel.parallelFor(0, nTokens, t -> {
-            for(int t = 0; t < nTokens; t++)
+            Parallel.parallelFor(0, nTokens, t -> {
+            //for(int t = 0; t < nTokens; t++)
                 state.x[t].addInPlace(state.xb[t]);
-            //});
- 			state.keyCache[curLayer].freeDevice();
-			state.valueCache[curLayer].freeDevice();
+            });
+            if(!Llama3.CPU_BYPASS_TEST) {
+            	state.keyCache[curLayer].freeDevice();
+            	state.valueCache[curLayer].freeDevice();
+            }
     		//}
         }
         //System.out.println("<<<END LAYER LOOP");
         //DeviceManager.report();
         //DeviceManager.reset();
         // final rmsnorm
-        //Parallel.parallelFor(0, nTokens, t -> {
-        for(int t = 0; t < nTokens; t++)
+        Parallel.parallelFor(0, nTokens, t -> {
+        //for(int t = 0; t < nTokens; t++)
             rmsnorm(state.x[t], state.x[t], weights.rms_final_weight_dev, dim, config.rmsNormEps);
-        //});      
+        });      
         if(false) {
         	try (Timer timer = Timer.log("Store Tensor:")) {
         		Llama3.dbClient.storekv(Llama3.tensorAlias, Llama3.xid, "index" , state.x[nTokens-1]);
@@ -2251,172 +2261,6 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         return state.logits;
     }
     
-    /**
-     * Forward inference for CUDA GPU-enabled platforms. Per-layer, per head multihead attention
-     * @param model The supported model
-     * @param state This wave of activations
-     * @param tokens Token stream
-     * @param position position in token stream
-     * @param computeLogits true to compute logits
-     * @return The FloatTensor of resulting logits
-     */
-    static FloatTensor forwardGPUTEST(Llama model, State state, int[] tokens, int position, boolean computeLogits) {
-    	//FloatTensor.dontMatch = 0;
-    	//FloatTensor.totalSdot = 0;
-    	// a few convenience variables
-    	//System.out.println("Starting forward inference");
-    	Configuration config = model.configuration();
-    	Weights weights = model.weights();
-    	int dim = config.dim;
-    	int headSize = config.headSize;
-    	int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
-    	int kvMul = config.numberOfHeads / config.numberOfKeyValueHeads; // integer multiplier of the kv sharing in multiquery
-    	final int nTokens = tokens.length;
-    	// copy the token embedding into x
-    	Parallel.parallelFor(0, nTokens, t ->
-    		weights.token_embedding_table.copyTo(tokens[t] * dim, state.x[t], 0, dim)
-    	);
-    	// forward all the layers
-        for (int l = 0; l < config.numberOfLayers; l++) {
-            final int curLayer = l;
-    		//System.out.println("Layer:"+curLayer);
-    		// attention rmsnorm
-    		//Timer timer = Timer.log("rms norm:"+curLayer);
-    		Parallel.parallelFor(0, nTokens, t -> {
-            //for(int t = 0; t < nTokens; t++)
-    			rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight_dev[curLayer], dim, config.rmsNormEps);
-    		});
-    		//timer.close();
-    		//timer = Timer.log("wq matmul layer:"+curLayer/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS);
-    		// qkv matmuls for this position
-    		weights.wq[curLayer].matmul(nTokens, state.xb, state.q, dim, dim);
-    		//timer.close();
-    		//timer = Timer.log("wk matmul layer:"+curLayer,TimeUnit.MICROSECONDS);
-    		weights.wk[curLayer].matmul(nTokens, state.xb, state.k, kvDim, dim);
-    		//timer.close();
-    		//timer = Timer.log("wv matmul layer:"+curLayer,TimeUnit.MICROSECONDS);
-    		weights.wv[curLayer].matmul(nTokens, state.xb, state.v, kvDim, dim);	
-        	//timer.close();
-    		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
-    		// RoPE relative positional encoding: complex-valued rotate q and k in each head
-    		//timer = Timer.log("RoPE parallel:"+curLayer,TimeUnit.MICROSECONDS);
-    		Parallel.parallelFor(0, nTokens, t -> {
-    			for (int i = 0; i < dim; i += 2) {
-    				int head_dim = i % headSize;
-    				float fcr = weights.freq_cis_real_dev.getFloat((position + t) * (headSize / 2) + (head_dim / 2));
-    				float fci = weights.freq_cis_imag_dev.getFloat((position + t) * (headSize / 2) + (head_dim / 2));
-    				int rotn = i < kvDim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
-    				for (int vi = 0; vi < rotn; vi++) {
-    					FloatTensor vec = vi == 0 ? state.q[t] : state.k[t]; // the vector to rotate (query or key)
-    					float v0 = vec.getFloat(i);
-    					float v1 = vec.getFloat(i + 1);
-    					vec.setFloat(i, v0 * fcr - v1 * fci);
-    					vec.setFloat(i + 1, v0 * fci + v1 * fcr);
-    				}
-    			}
-    		});
-    		//timer.close();
-    		//}         
-    		Parallel.parallelFor(0, nTokens, t -> {
-    		//for(int i = 0; i < nTokens; i++) {
-    			state.k[t].copyTo(0, state.keyCache[curLayer], (position + t) * kvDim, kvDim);
-    			state.v[t].copyTo(0, state.valueCache[curLayer], (position + t) * kvDim, kvDim);
-    		});
-    		//}
-    		// If the logits are not required, the attention and FFN of the last layer can be skipped entirely.
-    		if (!computeLogits && curLayer == config.numberOfLayers - 1) {
-    			state.idxPrevBlock = nTokens - 1;
-    			return null;
-    		}
-    		// original multihead attention. iterate over all heads
-    		//timer = Timer.log("GPU Multihead Attn layer:"+curLayer/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS);
-    		Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
-        		//for(long ht = 0; ht < ((long) nTokens * (long) config.numberOfHeads); ht++) {
-        			int token = (int) (ht / config.numberOfHeads);
-        			int h = (int) (ht % config.numberOfHeads);
-        			int qOffset = h * headSize;
-        			int attOffset = h * config.contextLength;
-        			// compute qk scores and softmax on device
-        			if(Llama3.CPU_BYPASS_TEST)
-        				DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
-        						state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
-        			else
-        				DeviceManager.qkScores(state.q[token], qOffset, state.keyCache[curLayer], 
-        						state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
-    			// weighted sum of the values, store back into xb
-    			// float* xb = s.xb + h * headSize;
-    			int xbOffset = h * headSize;
-    			if(Llama3.CPU_BYPASS_TEST)
-    				DeviceManager.weightedSumCpu(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
-    			else
-    				DeviceManager.weightedSum(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
-    		});
-    		//timer.close();
-    		//----end original multihead attention
-    		//timer = Timer.log("Final matmul and residual connection layer:"+l/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS);
-    		// final matmul to get the output of the attention
-    		// range of matmul is dim0 * context
-    		weights.wo[curLayer].matmul(nTokens, state.xb, state.xb2, dim, dim);
-    		// residual connection back into x
-    		Parallel.parallelFor(0, nTokens, t -> {
-    			//DeviceManager.reclaim(state.x[t], "state.x[t] addInPlace t="+t);
-    			//DeviceManager.reclaim(state.xb2[t], "state.xb2[t] addInPlace t="+t);
-    			state.x[t].addInPlace(state.xb2[t]);
-    		});
-    		//timer.close();
-    		//timer = Timer.log("FFN RMSNorm layer:"+l,TimeUnit.MICROSECONDS);
-    		// ffn rmsnorm
-    		Parallel.parallelFor(0, nTokens, t -> {
-    			rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight_dev[curLayer], dim, config.rmsNormEps);
-    		});
-    		//timer.close();
-    		//timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l/*+". "+FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total."*/,TimeUnit.MICROSECONDS);
-    		// Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
-    		// first calculate self.w1(x) and self.w3(x)
-    		weights.w1[curLayer].matmul(nTokens, state.xb, state.hb, config.hiddenDim, dim);
-    		weights.w3[curLayer].matmul(nTokens, state.xb, state.hb2, config.hiddenDim, dim);
-    		// SwiGLU non-linearity
-    		// silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
-      		//for(int i = 0; i < nTokens; i++) {
-    			//DeviceManager.reclaim(state.hb[i],"state.hb[i] i="+i+" from FFN for SwiGLU");
-    			//DeviceManager.reclaim(state.hb2[i], "state.hb2[i] i="+i+" from FFN for SwiGLU");
-    		//}
-    		Parallel.parallelFor(0, nTokens, t -> {
-    			state.hb[t].mapInPlace(value -> value / (float) (1.0 + Math.exp(-value)));
-    		});
-    		// elementwise multiply with w3(x)
-    		Parallel.parallelFor(0, nTokens, t -> {
-    			state.hb[t].multiplyInPlace(state.hb2[t]);
-    		});
-    		// final matmul to get the output of the ffn
-    		weights.w2[curLayer].matmul(nTokens, state.hb, state.xb, dim, config.hiddenDim);
-    		//for(int i = 0; i < nTokens; i++) {
-    			//DeviceManager.reclaim(state.x[i],"state.x[i] i="+i+" final matmul");
-    			//DeviceManager.reclaim(state.xb[i],"state.xb[i] i="+i+" final matmul");
-    		//}
-    		// residual connection
-    		Parallel.parallelFor(0, nTokens, t -> {
-    			state.x[t].addInPlace(state.xb[t]);
-    		});
-    		//timer.close();
-  			//state.keyCache[curLayer].freeDevice();
-			//state.valueCache[curLayer].freeDevice();
-    	}
-    	//System.out.println("<<<END LAYER LOOP>>>");
-    	// final rmsnorm
-     	//Timer timer = Timer.log("Final RMSnorm and Classifier into logits weights.wcls size=:"+weights.wcls.size());
-    	Parallel.parallelFor(0, nTokens, t -> {
-        //for(int t = 0; t < nTokens; t++)
-    		rmsnorm(state.x[t], state.x[t], weights.rms_final_weight_dev, dim, config.rmsNormEps);
-    	});      
-    	// classifier into logits
-    	weights.wcls.matmul(state.x[nTokens - 1], state.logits, config.vocabularySize, dim);
-    	state.idxPrevBlock = nTokens - 1;
- 		//System.out.println(FloatTensor.dontMatch+" GPU sDot's did not match "+FloatTensor.totalSdot+" total.");
- 		//DeviceManager.reclaim(state.logits,"state.logits");
- 		//timer.close();
-    	return state.logits;
-    }
     /**
      * Forward inference for the Qwen model
      * @param model

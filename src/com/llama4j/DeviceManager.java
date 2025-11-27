@@ -290,7 +290,11 @@ public final class DeviceManager {
 		try {
 			offer(thiz, "sdot thiz", false);
 			offer(that, "sdot that", false);
-			result = (float) Llama3.sdotSliceDeviceHandle.invokeExact(
+			//result = (float) Llama3.sdotSliceDeviceHandle.invokeExact(
+			//		thiz.devicePtrOr0(), thisOffset, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
+			//		that.devicePtrOr0(), thatOffset, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(),
+			//		size);
+			result = (float) Llama3.sdotSimple.invokeExact(
 					thiz.devicePtrOr0(), thisOffset, thiz.getFormatType(), thiz.type().getBlockSize(), thiz.type().getTypeSize(), thiz.getHeadSize(),
 					that.devicePtrOr0(), thatOffset, that.getFormatType(), that.type().getBlockSize(), that.type().getTypeSize(), that.getHeadSize(),
 					size);
