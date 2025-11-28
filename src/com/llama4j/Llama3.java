@@ -2054,14 +2054,18 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
                 rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight_dev[curLayer], dim, config.rmsNormEps);
-                if(!Llama3.CPU_BYPASS_TEST && !Llama3.RMSNORM_CPU)
-                	DeviceManager.reclaim(state.xb[t],"rmsnorm xb[t] "+t);
             });
     		//try (Timer timer = Timer.log("qkv matmuls layer:"+l,TimeUnit.MICROSECONDS)) {
             // qkv matmuls for this position
             weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
             weights.wk[l].matmul(nTokens, state.xb, state.k, kvDim, dim);
             weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);
+            for(int i = 0; i < state.q.length; i++)
+            	DeviceManager.reclaim(state.q[i],"qkv matmuls q "+i);
+            for(int i = 0; i < state.k.length; i++)
+            	DeviceManager.reclaim(state.k[i],"qkv matmuls k "+i);
+            for(int i = 0; i < state.v.length; i++)
+            	DeviceManager.reclaim(state.v[i],"qkv matmuls v "+i);
     		//}
     		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
             // RoPE relative positional encoding: complex-valued rotate q and k in each head
@@ -2113,74 +2117,12 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             	// iterate over all timesteps, including the current one
             	long nanos2 = System.nanoTime();
             	// compute qk scores and softmax on device
-            	ArrayFloatTensor att2 = null;
-            	if(Llama3.CPU_BYPASS_TEST) {
-            		DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
-            				state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
-                  	//att2 = (ArrayFloatTensor) ArrayFloatTensor.allocate(position+token+1);
-                	//state.att[token].copyTo(attOffset,  att2,  0,  position+token+1);
-            		//DeviceManager.qkScoresCpu(state.q[token], qOffset, state.keyCache[curLayer], 
-            		//		att2, 0, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
-            		//att2.copyTo(0, state.att[token], attOffset, position+token+1);
-            	} else {
-                    //for (int t = 0; t <= position + token; t++) {
-                    	//DeviceManager.reclaim(state.q[token],"qk scores state.q[token] "+t);
-                    	// get the key vector for this head and at this timestep
-                    	// float* k = s.key_cache + loff + t * dim + h * headSize;
-                    	//int keyCacheOffset = t * kvDim + (h / kvMul) * headSize;
-                    	// calculate the attention score as the dot product of q and k
-                    	//float score = state.q[token].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
-                    	//score /= sqrtHeadSize;
-                    	// save the score to the attention buffer
-                    	//state.att[token].setFloat(attOffset + t, score);
-                    	//System.out.printf("qkscores= qOff=%d attOff=%d pos=%d, token=%d, h=%d, headsize=%d kvDim=%d kvMul=%d\n",qOffset, attOffset, position, token,h,headSize, kvDim, kvMul);
-                    //}
-            		state.q[token].setModified();
-            		state.att[token].setModified();
-            		DeviceManager.qkScores(state.q[token], qOffset, state.keyCache[curLayer], 
-            				state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
-            		if(Llama3.WEIGHTEDSUM_CPU)
-            			DeviceManager.reclaim(state.att[token],"qkScores state.att[token]");
-            		//state.att[token].softmaxInPlace(attOffset, position + token + 1);
-            		//for(int i = 0; i <= position+token; i++) 
-        			//	System.out.println("state.att[token] len="+state.att[token].size()+" token="+token+" attOffset="+attOffset+" i= "+i+" state.att[token](attOffset+i)="+state.att[token].getFloat(attOffset+i));
-        				
-            	}
-        		/*if(Llama3.CPU_BYPASS_TEST) {
-        			for(int i = 0; i <= position+token; i++) {
-        				//System.out.println("state.att[token]="+token+":"+(attOffset+i)+".) "+state.att[token].getFloat(attOffset+i));
-        				if (Float.isNaN(state.att[token].getFloat(attOffset+i)) || Float.isNaN(att2.getFloat(i))) 
-        				    System.out.println("token="+token+" attOffset="+attOffset+" i="+i+"***NaN a="+state.att[token].getFloat(attOffset+i)+" b="+att2.getFloat(i));
-        				else{
-        					boolean boundsOut = false;
-        					if(Math.abs(state.att[token].getFloat(attOffset+i)-att2.getFloat(i)) > 1e-5)
-        						boundsOut = true;
-        					//if(boundsOut)
-        					System.out.println("h="+h+" token="+token+" attOffset="+attOffset+" i="+i+" diff: "+(Math.abs(state.att[token].getFloat(attOffset+i)-att2.getFloat(i))+" a="+state.att[token].getFloat(attOffset+i)+", b="+att2.getFloat(i))+ (boundsOut ? " ***OOB***" : ""));
-        				}
-        			}
-        		}*/
-            	// weighted sum of the values, store back into xb
-            	// float* xb = s.xb + h * headSize;
-            	//state.att[token].softmaxInPlace(attOffset, position + token + 1);
+            	state.q[token].setModified();
+            	state.att[token].setModified();
+            	DeviceManager.qkScores(state.q[token], qOffset, state.keyCache[curLayer], 
+            			state.att[token], attOffset, position, token, h, headSize, config.numberOfHeads, config.contextLength, kvDim, kvMul );
             	int xbOffset = h * headSize;
-            	if(Llama3.CPU_BYPASS_TEST || Llama3.WEIGHTEDSUM_CPU) {
-            		DeviceManager.weightedSumCpu(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
-            	} else {
-            		DeviceManager.weightedSum(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
-            		DeviceManager.reclaim(state.att[token],"qkScores state.att[token]");
-            		DeviceManager.reclaim(state.xb[token],"qkScores state.xb[token]");
-            		/*state.xb[token].fillInPlace(xbOffset, headSize, 0f);
-                    for (int t = 0; t <= position + token; t++) {
-                        // get the value vector for this head and at this timestep
-                        // float* v = s.value_cache + loff + t * dim + h * headSize;
-                        int vOffset = t * kvDim + (h / kvMul) * headSize;
-                        // get the attention weight for this timestep
-                        float a = state.att[token].getFloat(attOffset + t);
-                        // accumulate the weighted value into xb
-                        state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
-                    }*/
-            	}
+            	DeviceManager.weightedSum(state.att[token], state.xb[token], state.valueCache[curLayer], h, headSize, attOffset, xbOffset, kvDim,  kvMul, position, token);
             //});
       		}
             //----end original multihead attention
@@ -2190,9 +2132,10 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             // residual connection back into x
       		Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
-    			//DeviceManager.reclaim(state.x[t], "state.x[t] addInPlace t="+t);
-    			//DeviceManager.reclaim(state.xb2[t], "state.xb2[t] addInPlace t="+t);
-    			state.x[t].addInPlace(state.xb2[t]);
+      			// reclaim for previous matmul GPU
+      			DeviceManager.reclaim(state.x[t], "state.x[t] addInPlace t="+t);
+      			DeviceManager.reclaim(state.xb2[t], "state.xb2[t] addInPlace t="+t);
+    			state.x[t].addInPlace(state.xb2[t]); // will do setFLoat on this state.x[t] setting modified
     		});
     		//}
     		//try (Timer timer = Timer.log("FFN RMSNorm layer:"+l,TimeUnit.MICROSECONDS)) {
@@ -2200,8 +2143,6 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
                 rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight_dev[curLayer], dim, config.rmsNormEps);
-                if(!Llama3.CPU_BYPASS_TEST && !Llama3.RMSNORM_CPU)
-                	DeviceManager.reclaim(state.xb[t],"rmsnorm xb[t] "+t);
             });
     		//}
     		//try (Timer timer = Timer.log("SwiGLU non-linearity  and final conns layer:"+l,TimeUnit.MICROSECONDS)) {
@@ -2209,10 +2150,11 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             // first calculate self.w1(x) and self.w3(x)
             weights.w1[l].matmul(nTokens, state.xb, state.hb, config.hiddenDim, dim);
             weights.w3[l].matmul(nTokens, state.xb, state.hb2, config.hiddenDim, dim);
-    		//for(int i = 0; i < nTokens; i++) {
-    		//	DeviceManager.reclaim(state.hb[i],"state.hb[i] i="+i+" from FFN for SwiGLU");
-    		//	DeviceManager.reclaim(state.hb2[i], "state.hb2[i] i="+i+" from FFN for SwiGLU");
-            //}
+            // reclaim if matmul GPU - setup for swiglu
+            for(int i = 0; i < nTokens; i++) {
+            	DeviceManager.reclaim(state.hb[i],"state.hb[i] i="+i+" from FFN for SwiGLU");
+            	DeviceManager.reclaim(state.hb2[i], "state.hb2[i] i="+i+" from FFN for SwiGLU");
+            }
             // SwiGLU non-linearity
             // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
             Parallel.parallelFor(0, nTokens, t -> {
@@ -2222,27 +2164,22 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             // elementwise multiply with w3(x)
             Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
-                state.hb[t].multiplyInPlace(state.hb2[t]);
+                state.hb[t].multiplyInPlace(state.hb2[t]); // will do setFloat on this state.hb[t] setting modified
             });
-       		//for(int i = 0; i < nTokens; i++) {
-       			//DeviceManager.reclaim(state.x[i],"state.x[i] i="+i+" final matmul");
-       			//DeviceManager.reclaim(state.xb[i],"state.xb[i] i="+i+" final matmul");
-            //}
             // final matmul to get the output of the ffn
             weights.w2[curLayer].matmul(nTokens, state.hb, state.xb, dim, config.hiddenDim);
-     		//for(int i = 0; i < nTokens; i++) {
-     			//DeviceManager.reclaim(state.x[i],"state.x[i] i="+i+" final matmul");
-     			//DeviceManager.reclaim(state.xb[i],"state.xb[i] i="+i+" final matmul");
-            //}
+            // reclaim for residual connection
+     		for(int i = 0; i < nTokens; i++) {
+     			DeviceManager.reclaim(state.x[i],"state.x[i] i="+i+" final matmul");
+     			DeviceManager.reclaim(state.xb[i],"state.xb[i] i="+i+" final matmul");
+            }
             // residual connection
             Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
-                state.x[t].addInPlace(state.xb[t]);
+                state.x[t].addInPlace(state.xb[t]); // will set x[t] this to modified
             });
-            if(!Llama3.CPU_BYPASS_TEST) {
-            	state.keyCache[curLayer].freeDevice();
-            	state.valueCache[curLayer].freeDevice();
-            }
+            state.keyCache[curLayer].freeDevice();
+            state.valueCache[curLayer].freeDevice();
     		//}
         }
         //System.out.println("<<<END LAYER LOOP");
@@ -2252,8 +2189,6 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         Parallel.parallelFor(0, nTokens, t -> {
         //for(int t = 0; t < nTokens; t++)
             rmsnorm(state.x[t], state.x[t], weights.rms_final_weight_dev, dim, config.rmsNormEps);
-            if(!Llama3.CPU_BYPASS_TEST && !Llama3.RMSNORM_CPU)
-            	DeviceManager.reclaim(state.x[t],"rmsnorm x[t] "+t);
         });      
         if(false) {
         	try (Timer timer = Timer.log("Store Tensor:")) {
@@ -2263,7 +2198,7 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
         // classifier into logits
         weights.wcls.matmul(state.x[nTokens - 1], state.logits, config.vocabularySize, dim);
         state.idxPrevBlock = nTokens - 1;
-    	//DeviceManager.reclaim(state.logits,"state.logits");
+    	DeviceManager.reclaim(state.logits,"state.logits");
         return state.logits;
     }
     

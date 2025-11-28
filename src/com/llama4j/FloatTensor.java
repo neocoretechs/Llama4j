@@ -247,10 +247,8 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	//long nanos1 = System.nanoTime();
     	if(FloatTensor.USE_CUDA) {
       		//System.out.println("GPU test STARTED for SINGLE: dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that len:"+that.size()+" out len:"+out.size());
-    		if(!Llama3.CPU_BYPASS_TEST && !Llama3.MATMUL_CPU) {
-    			DeviceManager.matmul(this, that, out, dim0, dim1);
-		   		return;
-    		}
+    		DeviceManager.matmul(this, that, out, dim0, dim1);
+		   	return;
     	}
     	/*
     	out.copyDeviceToHost("comparison test");
@@ -287,12 +285,10 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     	if(FloatTensor.USE_CUDA) {
     		//Parallel.parallelFor(0, context, idxArr -> {
     		//System.out.println("GPU test STARTED for context:"+context+" dim0:"+dim0+" dim1:"+dim1+" this len:"+size()+" that array len:"+that.length+" out array len:"+out.length);
- 		   	if(!Llama3.CPU_BYPASS_TEST && !Llama3.MATMUL_CPU) {
-				for(int idxArr=0 ; idxArr < context; idxArr++) {
+			for(int idxArr=0 ; idxArr < context; idxArr++) {
     				DeviceManager.matmul(this, that[idxArr], out[idxArr], dim0, dim1); // we do the dot inside the device
-				}
-				return;
- 		   	}
+			}
+			return;
  	   		/*for(int i = 0; i < context; i++)
 	   			out[i].copyDeviceToHost("comparison test");
     		FloatTensor[] test = new FloatTensor[out.length];
