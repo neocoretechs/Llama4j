@@ -82,11 +82,7 @@ public class Llama3 {
     private static int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
     public final static boolean DEBUG = false;
     public final static boolean DISPLAY_METADATA = true;
-    public static boolean CPU_BYPASS_TEST = false;
-    public static boolean RMSNORM_CPU = false;
-	public static boolean MATMUL_CPU = true;
 	public static boolean SDOT_CPU = true;
-	public static boolean WEIGHTEDSUM_CPU = false;
     public static AsynchRelatrixClientTransaction dbClient = null;
     public static TransactionId xid = null;
     public static Alias tensorAlias = null;
@@ -1828,11 +1824,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
      */
     static void rmsnorm(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float rmsNormEps) {
     	if(FloatTensor.USE_CUDA) {
-    		if(Llama3.CPU_BYPASS_TEST || Llama3.RMSNORM_CPU)
-    			DeviceManager.rmsnormCpu(out, x, weight, size, rmsNormEps);
-    		else
-    			DeviceManager.rmsnormGpu(out, x, weight, size, rmsNormEps);
-    		return;
+    			DeviceManager.rmsnorm(out, x, weight, size, rmsNormEps);
+    			return;
     	}
     	// calculate sum of squares
     	float ss = x.reduce(0, size, 0f, (acc, xi) -> acc + xi * xi);

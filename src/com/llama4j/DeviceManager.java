@@ -155,7 +155,7 @@ public final class DeviceManager {
 	//launch_rmsnorm_fp32_rowmajor(uint8_t* qA, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
     //uint8_t* qB, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB,
     //float* out, int size, float eps)
-    static void rmsnormGpu(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) {
+    static void rmsnorm(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float eps) {
         try {
         	offer(x, "rmsnorm x", false);
         	offer(weight, "rmsnorm weight", false);

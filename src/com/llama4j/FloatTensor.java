@@ -112,7 +112,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     				thiz.getClass().getName(), Thread.currentThread().getName(), thisOffset, thatOffset, size);
     	float result = 0.0f;
     	try {
-    		if(Llama3.CPU_BYPASS_TEST || Llama3.SDOT_CPU) {
+    		if(Llama3.SDOT_CPU) {
     			result = DeviceManager.sdotCpu(thiz, thisOffset,that, thatOffset, size);
     		} else {
     			result = DeviceManager.sdot(thiz, thisOffset,that, thatOffset, size);
@@ -428,15 +428,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
     
     FloatTensor softmaxInPlace(int thisOffset, int size) {
     	if(USE_CUDA) {
-    		try {
-    			if(Llama3.CPU_BYPASS_TEST)
-    				DeviceManager.softmaxCpu(this, thisOffset, size);
-    			else {
-    				DeviceManager.softmax(this, thisOffset, size);
-    			}
-    		} catch (Throwable e) {
-    			throw new RuntimeException(e);
-    		}
+    		DeviceManager.softmax(this, thisOffset, size);
     		return this;
     	}
     	//----------------------
