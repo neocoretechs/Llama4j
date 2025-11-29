@@ -1,6 +1,5 @@
 package com.llama4j;
 
-import java.util.Iterator;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class DeviceManager {
@@ -23,9 +22,25 @@ public final class DeviceManager {
 			return String.format("Tensor %s uploads=%d downloads=%d upload bytes = %d download bytes = %d", id, uploads, downloads, uploadBytes, downloadBytes);
 		}
 	}
+	static class DeviceTensorStatus extends DeviceStatus {
+		DeviceTensor dt;
+		DeviceTensorStatus(DeviceTensor dt, TensorState state, String id) {
+			super(state, id);
+			this.dt = dt;
+		}
+	}
 	
-	private static ConcurrentHashMap<Long, DeviceStatus> deviceMap = new ConcurrentHashMap<>();
-	
+	private static final ConcurrentHashMap<Long, DeviceStatus> deviceMap = new ConcurrentHashMap<>();
+	private static final ConcurrentHashMap<String,DeviceTensorStatus> tensorsById = new ConcurrentHashMap<>();
+	private static final ConcurrentHashMap<Long,DeviceTensorStatus> tensorsByPtr = new ConcurrentHashMap<>();
+
+
+	/**
+	 * Copy {@link FloatTensor} to device
+	 * @param t
+	 * @param id
+	 * @param reupload
+	 */
 	public static synchronized void offer(FloatTensor t, String id, boolean reupload) {
 		if(t.devicePtrOr0() == 0L) {
 			t.allocDevice();
@@ -52,9 +67,46 @@ public final class DeviceManager {
 			}
 		}
 	}
+	
+	/**
+	 * Copy {@link DeviceTensor} pointer table to device. Locate by id in deviceMap via derived DeviceTensorStatus class.
+	 * If we have to create it, as in it wasnt in the table via id, check and upload all associated FloatTensors via
+	 * offer of FloatTensor.
+	 * @param t
+	 * @param id
+	 * @param reupload
+	 */
+	public static void offer(FloatTensor[] t, String id, boolean reupload) {
+	    DeviceTensorStatus status = tensorsById.get(id);
+	    DeviceTensor dt;
+	    if (status == null) {
+	        dt = new DeviceTensor(t);
+	        dt.allocDevice();
+	        status = new DeviceTensorStatus(dt, TensorState.ON_HOST, id);
+	        tensorsById.put(id, status);
+	        tensorsByPtr.put(dt.devicePtrOr0(), status);
+	    } else {
+	        dt = status.dt;
+	        if (dt.devicePtrOr0() == 0L) {
+	            dt.allocDevice();
+	            tensorsByPtr.put(dt.devicePtrOr0(), status);
+	        }
+	    }
+	    if (status.state != TensorState.ON_DEVICE || !dt.isUploaded() || reupload) {
+	        dt.copyHostToDevicePointerTable(id);
+	        status.state = TensorState.ON_DEVICE;
+	        status.uploadBytes += dt.totalBytes();
+	        ++status.uploads;
+	    }
+	    for (int i = 0; i < t.length; i++) {
+	        offer(t[i], id + " element " + i, false);
+	    }
+	}
+
+
 
 	/**
-	 * called from FlotTensor.freeDevice()
+	 * called from FloatTensor.freeDevice() and {@link DeviceTensor#freeDevice}
 	 * @param devicePtr
 	 */
 	public static void reclaim(long devicePtr) {
@@ -86,6 +138,38 @@ public final class DeviceManager {
 				}
 			} else { // its on device, download
 				t.copyDeviceToHost(id);
+				status.downloadBytes += t.totalBytes();
+				++status.downloads;
+			}
+		}
+	}
+	
+	/**
+	 * Copy data from device to devicetensor pointer table, this should be rare if at all
+	 * @param t
+	 */
+	public static synchronized void reclaim(DeviceTensor t, String id) {
+		if(t.isImmutable()) {
+			throw new RuntimeException("Attempt to reclaim immutable tensor "+id);
+		}
+		if(t.devicePtrOr0() == 0L) {
+			throw new RuntimeException("DeviceTensor "+id+" was already freed. Cannot download from device.");
+		}
+		DeviceStatus status = deviceMap.get(t.devicePtrOr0());
+		if(status == null) { // allocated outside device manager, deal with it
+			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST, id));
+			System.out.println("WARNING - DeviceTensor "+id+" was previously unknown to device manager.");
+		} else {
+			if(status.state != TensorState.ON_DEVICE) { // not on device for device manager, but uploaded to tensor?
+				if(t.isUploaded()) {
+					status.state = TensorState.ON_DEVICE;
+					System.out.println("WARNING - Tensor "+id+" uploaded outside device manager.");
+					t.copyDeviceToHostPointerTable(id);
+					status.downloadBytes += t.totalBytes();
+					++status.downloads;
+				}
+			} else { // its on device, download
+				t.copyDeviceToHostPointerTable(id);
 				status.downloadBytes += t.totalBytes();
 				++status.downloads;
 			}
@@ -329,6 +413,14 @@ public final class DeviceManager {
 		} catch (Throwable e) {
 			throw new RuntimeException(e);
 		}
+    }
+    
+    public static void rope(FloatTensor w_real, FloatTensor w_imag, FloatTensor[] state_q, FloatTensor[] state_k, int nTokens, int dim, int position, int headSize, int kvDim) {
+    	offer(w_real, "weights.freq_cis_real_dev", false);
+    	offer(w_imag," weights.freq_cis_imag_dev", false);
+    	offer(state_q, "state_q", false);
+    	offer(state_k, "state_k", false);
+    	
     }
     
     protected static void printParallelMatmul() {

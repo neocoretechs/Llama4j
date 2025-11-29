@@ -2060,6 +2060,8 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
     		//}
     		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
             // RoPE relative positional encoding: complex-valued rotate q and k in each head
+            DeviceManager.rope(weights.freq_cis_real_dev, weights.freq_cis_imag_dev, state.q, state.k, nTokens, dim, position, headSize, kvDim);
+            //
             Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
                 for (int i = 0; i < dim; i += 2) {

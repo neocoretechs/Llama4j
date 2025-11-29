@@ -89,12 +89,16 @@ public class DeviceTensor implements Externalizable, Comparable {
         assert Arrays.stream(dimensions).allMatch(i -> i > 0);
         return Arrays.stream(dimensions).reduce(Math::multiplyExact).orElseThrow();
     }
- 
+    /**
+     * Allocate the memorySegment to device pointer and register it with DeviceReclaim
+     */
     public void allocDevice() {
     	devicePtr = allocDevice(getSegment().byteSize());
      	deviceReclaim = new DeviceMemoryReclaim(this);	
     }
-    
+    /**
+     * Call the freeDevicePtr FFI handle to free device memory, set devicePtr to 0 call {@link DeviceManager#reclaim} {@link DeviceMemoryLedger#release}
+     */
     public void freeDevice() {
     	if(isAllocated()) {
     		try {
