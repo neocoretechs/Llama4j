@@ -30,6 +30,7 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 	
     private long devicePtr; // 0 if not uploaded
     private boolean uploaded = false;
+    private volatile DeviceMemoryReclaim deviceReclaim;
 	public static int dontMatch = 0;
 	public static int totalSdot = 0;
 	//public static Object mutex = new Object();
@@ -139,16 +140,18 @@ public abstract class FloatTensor implements Externalizable, Comparable {
 		}
  		++totalSdot;
     }
+    
     public void allocDevice() {
     	devicePtr = allocDevice(getSegment().byteSize());
+     	deviceReclaim = new DeviceMemoryReclaim(this);	
     }
     
     public void freeDevice() {
     	if(isAllocated()) {
-    		DeviceMemoryLedger.release(getSegment().byteSize());
     		try {
 				Llama3.freeDevicePtr.invokeExact(devicePtr);
 			} catch (Throwable e) {}
+       		DeviceMemoryLedger.release(getSegment().byteSize());
     		DeviceManager.reclaim(devicePtr);
     		uploaded = false;
     		devicePtr = 0L;

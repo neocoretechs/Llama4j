@@ -97,8 +97,6 @@ public class Llama3 {
 	public static MethodHandle getFloatQ8;
 	public static MethodHandle getFloat;
 	public static MethodHandle sdotSliceDeviceHandle;
-    public static MethodHandle cublasGetHandle;
-    public static MethodHandle cublasFreeHandle;
     public static MethodHandle cudaGetMemInfo;
     public static MethodHandle sdotSimple;
     public static MethodHandle launchRmsnorm;

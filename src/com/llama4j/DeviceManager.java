@@ -331,7 +331,6 @@ public final class DeviceManager {
 		}
     }
     
-    
     protected static void printParallelMatmul() {
         /*System.out.println("Parallel matmul print start:");
         Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
