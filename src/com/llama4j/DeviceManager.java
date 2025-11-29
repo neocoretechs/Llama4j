@@ -34,7 +34,6 @@ public final class DeviceManager {
 	private static final ConcurrentHashMap<String,DeviceTensorStatus> tensorsById = new ConcurrentHashMap<>();
 	private static final ConcurrentHashMap<Long,DeviceTensorStatus> tensorsByPtr = new ConcurrentHashMap<>();
 
-
 	/**
 	 * Copy {@link FloatTensor} to device
 	 * @param t
@@ -84,6 +83,8 @@ public final class DeviceManager {
 	        dt.allocDevice();
 	        status = new DeviceTensorStatus(dt, TensorState.ON_HOST, id);
 	        tensorsById.put(id, status);
+	        if(tensorsByPtr.get(dt.devicePtrOr0()) != null)
+	        	System.out.println("WARNING - mismatch between DeviceTensor tables!");
 	        tensorsByPtr.put(dt.devicePtrOr0(), status);
 	    } else {
 	        dt = status.dt;
@@ -103,14 +104,14 @@ public final class DeviceManager {
 	    }
 	}
 
-
-
 	/**
 	 * called from FloatTensor.freeDevice() and {@link DeviceTensor#freeDevice}
 	 * @param devicePtr
 	 */
 	public static void reclaim(long devicePtr) {
 		deviceMap.remove(devicePtr);
+		Object dst = tensorsByPtr.remove(devicePtr);
+		tensorsById.remove(((DeviceTensorStatus)dst).id);
 	}
 	/**
 	 * Copy data from device to tensor
@@ -155,9 +156,11 @@ public final class DeviceManager {
 		if(t.devicePtrOr0() == 0L) {
 			throw new RuntimeException("DeviceTensor "+id+" was already freed. Cannot download from device.");
 		}
-		DeviceStatus status = deviceMap.get(t.devicePtrOr0());
+		DeviceTensorStatus status = tensorsByPtr.get(t.devicePtrOr0());
 		if(status == null) { // allocated outside device manager, deal with it
-			deviceMap.put(t.devicePtrOr0(), new DeviceStatus(TensorState.ON_HOST, id));
+			status = new DeviceTensorStatus(t,TensorState.ON_HOST, id);
+			tensorsByPtr.put(t.devicePtrOr0(), status);
+			tensorsById.put(id, status);
 			System.out.println("WARNING - DeviceTensor "+id+" was previously unknown to device manager.");
 		} else {
 			if(status.state != TensorState.ON_DEVICE) { // not on device for device manager, but uploaded to tensor?
