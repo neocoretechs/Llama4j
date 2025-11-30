@@ -251,6 +251,34 @@ public final class NativeLoader {
 						ValueLayout.JAVA_INT	  // kvMul
 						));
 		System.out.println("launch_qkscores:"+Llama3.launchQK);
+	    //void launch_rope(const uint8_t* d_real, int indexA, int formatA, int blockSizeA, int typeSizeA, int headerBytesA,
+	    //const uint8_t* d_imag, int indexB, int formatB, int blockSizeB, int typeSizeB, int headerBytesB,
+	    //uint8_t* d_q, uint8_t* d_k, // state.q , state.k
+	    //int nTokens, int dim, int position, int headSize, int kvDim)
+		Llama3.launchRope = linker.downcallHandle(
+				lookup.find("launch_rope").get(),
+				FunctionDescriptor.ofVoid(
+						ValueLayout.JAVA_LONG,    // d_real weight
+						ValueLayout.JAVA_INT,    // index d_real
+						ValueLayout.JAVA_INT,     // format q (1-5 = Q8,Q4,F16,BF16,F32)
+						ValueLayout.JAVA_INT,     // blockSize q for format
+						ValueLayout.JAVA_INT,     // typeSize q for format
+						ValueLayout.JAVA_INT,     // headerBytes q for format
+						ValueLayout.JAVA_LONG,    // d_imag weight
+						ValueLayout.JAVA_INT,     // index d_imag
+						ValueLayout.JAVA_INT,     // format 
+						ValueLayout.JAVA_INT,     // blocksize 
+						ValueLayout.JAVA_INT,     // typeSize 
+						ValueLayout.JAVA_INT,     // headerBytes
+						ValueLayout.JAVA_LONG,    // d_q DeviceTensor state.q
+						ValueLayout.JAVA_LONG,    // d_k DeviceTensor state.k
+						ValueLayout.JAVA_INT,     // nTokens
+						ValueLayout.JAVA_INT,	  // dim
+						ValueLayout.JAVA_INT,     // position
+						ValueLayout.JAVA_INT,     // headSize
+						ValueLayout.JAVA_INT     // kvDim
+						));
+		System.out.println("launch_rope:"+Llama3.launchRope);
 	    Llama3.allocDevicePtr = linker.downcallHandle(
 		        lookup.find("allocDevicePtr").get(),
 		        FunctionDescriptor.of(ValueLayout.JAVA_LONG, // uint64_t device ptr

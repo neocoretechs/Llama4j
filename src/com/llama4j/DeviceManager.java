@@ -75,7 +75,7 @@ public final class DeviceManager {
 	 * @param id
 	 * @param reupload
 	 */
-	public static void offer(FloatTensor[] t, String id, boolean reupload) {
+	public static DeviceTensor offer(FloatTensor[] t, String id, boolean reupload) {
 	    DeviceTensorStatus status = tensorsById.get(id);
 	    DeviceTensor dt;
 	    if (status == null) {
@@ -102,6 +102,7 @@ public final class DeviceManager {
 	    for (int i = 0; i < t.length; i++) {
 	        offer(t[i], id + " element " + i, false);
 	    }
+	    return dt;
 	}
 
 	/**
@@ -111,7 +112,8 @@ public final class DeviceManager {
 	public static void reclaim(long devicePtr) {
 		deviceMap.remove(devicePtr);
 		Object dst = tensorsByPtr.remove(devicePtr);
-		tensorsById.remove(((DeviceTensorStatus)dst).id);
+		if(dst != null)
+			tensorsById.remove(((DeviceTensorStatus)dst).id);
 	}
 	/**
 	 * Copy data from device to tensor
@@ -419,11 +421,21 @@ public final class DeviceManager {
     }
     
     public static void rope(FloatTensor w_real, FloatTensor w_imag, FloatTensor[] state_q, FloatTensor[] state_k, int nTokens, int dim, int position, int headSize, int kvDim) {
-    	offer(w_real, "weights.freq_cis_real_dev", false);
-    	offer(w_imag," weights.freq_cis_imag_dev", false);
-    	offer(state_q, "state_q", false);
-    	offer(state_k, "state_k", false);
-    	
+    	try {
+    		offer(w_real, "weights.freq_cis_real_dev", false);
+    		offer(w_imag," weights.freq_cis_imag_dev", false);
+    		DeviceTensor d_q = offer(state_q, "state_q", false);
+    		DeviceTensor d_k = offer(state_k, "state_k", false);
+    		Llama3.launchRope.invokeExact(w_real.devicePtrOr0(), 0, w_real.getFormatType(), w_real.type().getBlockSize(), w_real.type().getTypeSize(), w_real.getHeadSize(),
+    				w_imag.devicePtrOr0(), 0, w_imag.getFormatType(), w_imag.type().getBlockSize(), w_imag.type().getTypeSize(), w_imag.getHeadSize(), 
+    				d_q.devicePtrOr0(), d_k.devicePtrOr0(), nTokens, dim, position, headSize, kvDim);
+    		for(int i = 0; i < state_q.length; i++)
+    			reclaim(state_q[i],  "state_q "+i);
+    		for(int i = 0; i < state_k.length; i++)
+    			reclaim(state_k[i],  "state_k "+i);
+    	} catch (Throwable e) {
+    		throw new RuntimeException(e);
+    	}
     }
     
     protected static void printParallelMatmul() {

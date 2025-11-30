@@ -104,14 +104,12 @@ public class Llama3 {
 	public static MethodHandle launchSoftmaxInplace;
     public static MethodHandle launchAV;
 	public static MethodHandle launchMatmul;
+	public static MethodHandle launchRope;
 	public static MethodHandle copyHostToDeviceMH;
 	public static MethodHandle copyDeviceToHostMH;
 	public static MethodHandle freeDevicePtr;
 	public static MethodHandle allocDevicePtr;
 	public static MethodHandle cudaInit;
-	
-	public static BufferPool poolHead   = new BufferPool();
-	public static BufferPool poolScalar = new BufferPool();
 	
 	static ArrayFloatTensor testTensor = null;
 	
@@ -2051,10 +2049,10 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
             weights.wk[l].matmul(nTokens, state.xb, state.k, kvDim, dim);
             weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);
-            for(int i = 0; i < state.q.length; i++)
-            	DeviceManager.reclaim(state.q[i],"qkv matmuls q "+i);
-            for(int i = 0; i < state.k.length; i++)
-            	DeviceManager.reclaim(state.k[i],"qkv matmuls k "+i);
+            //for(int i = 0; i < state.q.length; i++)
+            //	DeviceManager.reclaim(state.q[i],"qkv matmuls q "+i);
+            //for(int i = 0; i < state.k.length; i++)
+            //	DeviceManager.reclaim(state.k[i],"qkv matmuls k "+i);
             for(int i = 0; i < state.v.length; i++)
             	DeviceManager.reclaim(state.v[i],"qkv matmuls v "+i);
     		//}
@@ -2062,22 +2060,22 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             // RoPE relative positional encoding: complex-valued rotate q and k in each head
             DeviceManager.rope(weights.freq_cis_real_dev, weights.freq_cis_imag_dev, state.q, state.k, nTokens, dim, position, headSize, kvDim);
             //
-            Parallel.parallelFor(0, nTokens, t -> {
+            //Parallel.parallelFor(0, nTokens, t -> {
             //for(int t = 0; t < nTokens; t++)
-                for (int i = 0; i < dim; i += 2) {
-                    int head_dim = i % headSize;
-                    float fcr = weights.freq_cis_real_dev.getFloat((position + t) * (headSize / 2) + (head_dim / 2));
-                    float fci = weights.freq_cis_imag_dev.getFloat((position + t) * (headSize / 2) + (head_dim / 2));
-                    int rotn = i < kvDim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
-                    for (int vi = 0; vi < rotn; vi++) {
-                        FloatTensor vec = vi == 0 ? state.q[t] : state.k[t]; // the vector to rotate (query or key)
-                        float v0 = vec.getFloat(i);
-                        float v1 = vec.getFloat(i + 1);
-                        vec.setFloat(i, v0 * fcr - v1 * fci);
-                        vec.setFloat(i + 1, v0 * fci + v1 * fcr);
-                    }
-                }
-            });
+                //for (int i = 0; i < dim; i += 2) {
+                //    int head_dim = i % headSize;
+                //    float fcr = weights.freq_cis_real_dev.getFloat((position + t) * (headSize / 2) + (head_dim / 2));
+                //    float fci = weights.freq_cis_imag_dev.getFloat((position + t) * (headSize / 2) + (head_dim / 2));
+                //    int rotn = i < kvDim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
+                //    for (int vi = 0; vi < rotn; vi++) {
+                //        FloatTensor vec = vi == 0 ? state.q[t] : state.k[t]; // the vector to rotate (query or key)
+                //        float v0 = vec.getFloat(i);
+                //        float v1 = vec.getFloat(i + 1);
+                //        vec.setFloat(i, v0 * fcr - v1 * fci);
+                //        vec.setFloat(i + 1, v0 * fci + v1 * fcr);
+                //    }
+                //}
+            //});
     		//}
     		//try (Timer timer = Timer.log("Save kv layer:"+l,TimeUnit.MICROSECONDS)) {
             // save key,value at this time step (position) to our kv cache
