@@ -24,8 +24,7 @@ public class DeviceTensor implements Externalizable, Comparable {
 	public static boolean DEBUG = false;
     static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
-	
-    private long[] devicePtrs; // 0 if not uploaded
+
     private long devicePtr; // 0 if not uploaded
     private volatile DeviceMemoryReclaim deviceReclaim;
     private boolean uploaded = false;
@@ -253,7 +252,7 @@ public class DeviceTensor implements Externalizable, Comparable {
 	}
 
 	public int size() {
-			return (int) (memorySegment.byteSize() / Float.BYTES);
+		return (int) (memorySegment.byteSize() / Long.BYTES);
 	}
 
 	public long getLong(int index) {
@@ -266,7 +265,7 @@ public class DeviceTensor implements Externalizable, Comparable {
 	}
 
 	protected long totalBytes() { 
-		return size() * (long) Float.BYTES; 
+		return size() * (long) Long.BYTES; 
 	}
 
 	public boolean isImmutable() {

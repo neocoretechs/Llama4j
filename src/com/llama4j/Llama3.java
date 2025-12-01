@@ -2049,15 +2049,12 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
             weights.wk[l].matmul(nTokens, state.xb, state.k, kvDim, dim);
             weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);
-            //for(int i = 0; i < state.q.length; i++)
-            //	DeviceManager.reclaim(state.q[i],"qkv matmuls q "+i);
-            //for(int i = 0; i < state.k.length; i++)
-            //	DeviceManager.reclaim(state.k[i],"qkv matmuls k "+i);
             for(int i = 0; i < state.v.length; i++)
             	DeviceManager.reclaim(state.v[i],"qkv matmuls v "+i);
     		//}
     		//try (Timer timer = Timer.log("RoPe layer:"+l,TimeUnit.MICROSECONDS)) {
             // RoPE relative positional encoding: complex-valued rotate q and k in each head
+            // performs reclaim of q and k in DeviceManager
             DeviceManager.rope(weights.freq_cis_real_dev, weights.freq_cis_imag_dev, state.q, state.k, nTokens, dim, position, headSize, kvDim);
             //
             //Parallel.parallelFor(0, nTokens, t -> {
@@ -2084,10 +2081,13 @@ record Llama(Configuration configuration, TokenizerInterface tokenizer, Weights 
             //for(int t = 0; t < nTokens; t++) {
                 state.k[t].copyTo(0, state.keyCache[curLayer], (position + t) * kvDim, kvDim);
                 state.v[t].copyTo(0, state.valueCache[curLayer], (position + t) * kvDim, kvDim);
-                state.keyCache[curLayer].setModified();
-                state.valueCache[curLayer].setModified();
             });
     		//}
+            state.keyCache[curLayer].setModified();
+            state.valueCache[curLayer].setModified();
+            //for(int i = 0; i < nTokens; i++)
+            //	for(int j = 0; j < kvDim; j++)
+            //	System.out.println("state.k["+i+"].getFloat("+j+") = "+state.k[i].getFloat(j));
             // If the logits are not required, the attention and FFN of the last layer can be skipped entirely.
             if (!computeLogits && curLayer == config.numberOfLayers - 1) {
                 state.idxPrevBlock = nTokens - 1;

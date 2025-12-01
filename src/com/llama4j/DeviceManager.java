@@ -3,6 +3,7 @@ package com.llama4j;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class DeviceManager {
+	private static boolean DEBUG = false;
 	public static enum TensorState {
 		ON_DEVICE,
 		ON_HOST
@@ -102,6 +103,9 @@ public final class DeviceManager {
 	    for (int i = 0; i < t.length; i++) {
 	        offer(t[i], id + " element " + i, false);
 	    }
+	    if(DEBUG)
+	    	for(int i = 0; i < dt.size(); i++)
+	    		System.out.println("dt "+id+" "+i+"="+dt.getLong(i));
 	    return dt;
 	}
 
